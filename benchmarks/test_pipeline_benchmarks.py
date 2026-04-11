@@ -84,9 +84,7 @@ def dascore_scale_add_detrend_normalize(example_patch) -> Callable[[], object]:
 @pytest.fixture(scope="module")
 def dasjax_scale_pass_filter_abs(example_patch) -> Callable[[], object]:
     """Return a warmed compiled dasjax filtering pipeline."""
-    pipeline = (
-        JaxPatchPipeline().scale(2.0).pass_filter(time=(2.0, 10.0)).abs()
-    )
+    pipeline = JaxPatchPipeline().scale(2.0).pass_filter(time=(2.0, 10.0)).abs()
     compiled = pipeline.compile()
     compiled(example_patch)
     return lambda: compiled(example_patch)

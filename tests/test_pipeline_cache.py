@@ -134,7 +134,11 @@ def test_compiled_pipeline_with_fbe_matches_eager() -> None:
     expected = _run_operation(
         _run_operation(patch, "scale", 2.0),
         "fbe",
-        time=64, samples=True, overlap=32, fmin=2.0, fmax=10.0
+        time=64,
+        samples=True,
+        overlap=32,
+        fmin=2.0,
+        fmax=10.0,
     )
     assert np.allclose(out.data, expected.data, equal_nan=True, rtol=1e-5, atol=1e-6)
     assert out.coords == expected.coords

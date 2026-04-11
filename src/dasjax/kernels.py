@@ -458,7 +458,9 @@ def banded_stft_kernel(
         frames = _linear_detrend_frames(frames)
     tapered = frames * window_arr
     spectrum = jnp.fft.rfft(tapered, axis=-1)
-    reduced = jnp.sum(jnp.abs(spectrum[..., selected_bins_arr]), axis=-1) * abs(sample_step)
+    reduced = jnp.sum(jnp.abs(spectrum[..., selected_bins_arr]), axis=-1) * abs(
+        sample_step
+    )
     reduced = jnp.where(frame_has_nan, 0.0, reduced)
     out = reduced.reshape(moved.shape[:-1] + (frame_starts_arr.shape[0],))
     return jnp.moveaxis(out, -1, axis)
