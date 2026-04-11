@@ -17,7 +17,7 @@ dynamic = ["version"]
 description = "A dascore compatibility layer for JAX."
 readme = "README.md"
 requires-python = ">=3.12"
-license = { file = "LICENSE" }
+license = "LGPL-3.0-or-later"
 dependencies = [
   "dascore>=0.1.15",
   "jax>=0.4.33",
