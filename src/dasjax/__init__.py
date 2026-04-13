@@ -11,10 +11,10 @@ import jax
 jax.config.update("jax_enable_x64", True)
 
 from . import pytree as pytree
-from .operations import JaxPatchOperation, list_operations
+from .operations import list_operations
 from .pipeline import JaxPatchPipeline
 
-__all__ = ["JaxPatchOperation", "JaxPatchPipeline", "list_operations"]
+__all__ = ["JaxPatchPipeline", "list_operations"]
 
 try:
     __version__ = version("dasjax")

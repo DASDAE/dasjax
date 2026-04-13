@@ -44,10 +44,10 @@ print(out.shape)
 
 1. Pipeline layer:
    `src/dasjax/pipeline.py` records operation chains and compiles reusable patch transforms. This is the main user-facing API.
-2. Operation and pipeline layer:
-   `src/dasjax/operations.py` defines the operation registry, validation rules, internal eager implementations, and compiled behavior.
+2. Operation layer:
+   `src/dasjax/operations/` defines the operation registry, execution policies, validation rules, eager patch implementations, and compiled leaf transforms.
 3. Kernel layer:
-   `src/dasjax/kernels.py` contains the array-level JAX and callback-backed kernels that actually do the numerical work.
+   `src/dasjax/kernels/` contains the array-level JAX and callback-backed kernels that actually do the numerical work, grouped by domain (`basic`, `signal`, `filters`, `spectral`).
 
 This split keeps the package easier to extend: add or update numerical behavior in the kernel layer, describe how it plugs into compiled execution in the operation layer, and expose it through the pipeline layer.
 
@@ -58,25 +58,19 @@ The table below tracks what is missing and roughly how much effort each addition
 
 #### Near-term — straightforward pure-JAX array ops
 
-No new infrastructure needed; each maps directly to one or two `jnp` calls.
+Implemented in the current package:
 
-| Method | Implementation notes |
-|---|---|
-| `real`, `imag`, `angle`, `conj` | `jnp` one-liners for complex patches |
-| `flip` | `jnp.flip` along a named dim |
-| `roll` | `jnp.roll` circular shift along a dim |
-| `pad` | `jnp.pad` with DASCore coordinate extension |
-| `standardize` | zero-mean + unit-std (compare `normalize`) |
-| `differentiate` | `jnp.diff` finite differences along a dim |
-| `integrate` | `jnp.cumsum` / trapezoid along a dim |
-| `dft` / `idft` | `jnp.fft.rfft` / `irfft` with coord reconstruction |
-| `hilbert` / `envelope` | hilbert via FFT; `envelope = abs(hilbert(data))` |
-| `taper` / `taper_range` | hann / cosine windows broadcast along axis |
-| `whiten` | spectral divide-by-amplitude via FFT |
+- `real`, `imag`, `angle`, `conj`
+- `flip`, `roll`, `pad`
+- `standardize`, `differentiate`, `integrate`
+- `dft`, `idft`
+- `hilbert`, `envelope`
+- `taper`, `taper_range`
+- `whiten`
 
 #### Medium-term — moderate effort or shape-changing
 
-These need either more work in kernels.py or are shape-changing (segmented pipeline execution, same mechanism as `fbe`).
+These need either more work in the kernel layer or are shape-changing (segmented pipeline execution, same mechanism as `fbe`).
 
 | Method | Implementation notes |
 |---|---|
@@ -96,7 +90,7 @@ These need either more work in kernels.py or are shape-changing (segmented pipel
 
 ## Development Guidelines
 
-- Add new JAX patch methods by defining an array kernel in `src/dasjax/kernels.py` and one operation spec in `src/dasjax/operations.py`.
+- Add new JAX patch methods by defining an array kernel in `src/dasjax/kernels/` and one operation spec in the relevant `src/dasjax/operations/` family module.
 - The operation spec is the single source of truth for pipeline support, validation, and shared parity test cases.
 - Every new patch method must be tested against a DASCore baseline across the shared mixed-patch fixture in `tests/conftest.py`.
 - Prefer comparing internal operation behavior and compiled pipeline outputs against the closest native DASCore method or operator. If DASCore has no direct method, compare against an equivalent `Patch.update(...)` baseline.

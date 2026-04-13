@@ -1,8 +1,7 @@
-"""Array-level JAX kernels shared by eager and compiled patch operations."""
+"""Filter kernels and callback-backed helpers."""
 
 from __future__ import annotations
 
-import functools
 from typing import Any
 
 import jax
@@ -10,96 +9,15 @@ from jax import lax
 import jax.numpy as jnp
 import numpy as np
 import pandas as pd
-from scipy import ndimage
 from dascore.exceptions import FilterValueError
+from scipy import ndimage
 from scipy.ndimage import median_filter as scipy_median_filter
 from scipy.signal import iirfilter, sosfilt_zi, zpk2sos
 
 
-def identity_kernel(data: Any) -> Any:
-    """Return the input unchanged."""
-    return data
-
-
-def scale_kernel(data: Any, factor: float) -> Any:
-    """Scale data by a constant factor."""
-    return jnp.asarray(data) * factor
-
-
-def add_kernel(data: Any, value: float) -> Any:
-    """Add a constant value to the data."""
-    return jnp.asarray(data) + value
-
-
-def abs_kernel(data: Any) -> Any:
-    """Take the absolute value of the data."""
-    return jnp.abs(jnp.asarray(data))
-
-
-def clip_kernel(data: Any, min_value: float, max_value: float) -> Any:
-    """Clip data to the provided range."""
-    return jnp.clip(jnp.asarray(data), min_value, max_value)
-
-
-def validate_detrend_type(type: str) -> str:
-    """Normalize supported detrend type aliases."""
-    alias_map = {
-        "linear": "linear",
-        "l": "linear",
-        "constant": "constant",
-        "c": "constant",
-    }
-    try:
-        return alias_map[type]
-    except KeyError as exc:
-        msg = "Trend type must be 'linear' or 'constant'."
-        raise ValueError(msg) from exc
-
-
-def detrend_kernel(data: Any, axis: int, type: str) -> Any:
-    """Detrend an array along one axis using JAX-compatible math."""
-    data = jnp.asarray(data)
-    detrend_type = validate_detrend_type(type)
-    if detrend_type == "constant":
-        return data - jnp.mean(data, axis=axis, keepdims=True)
-
-    moved = jnp.moveaxis(data, axis, 0)
-    npts = moved.shape[0]
-    reshaped = moved.reshape(npts, -1)
-    dtype = reshaped.dtype
-    ramp = jnp.arange(1, npts + 1, dtype=dtype) / npts
-    ramp_centered = ramp - jnp.mean(ramp)
-    mean = jnp.mean(reshaped, axis=0, keepdims=True)
-    numerator = jnp.sum(ramp_centered[:, None] * (reshaped - mean), axis=0)
-    denominator = jnp.sum(ramp_centered * ramp_centered)
-    slope = jnp.where(denominator != 0, numerator / denominator, 0)
-    trend = mean + ramp_centered[:, None] * slope[None, :]
-    detrended = reshaped - trend
-    restored = detrended.reshape(moved.shape)
-    return jnp.moveaxis(restored, 0, axis)
-
-
-def normalize_kernel(data: Any, axis: int, norm: str = "l2") -> Any:
-    """Normalize an array along one axis using DASCore semantics."""
-    data = jnp.asarray(data)
-    if norm in {"l1", "l2"}:
-        order = int(norm[-1])
-        norm_values = jnp.linalg.norm(data, axis=axis, ord=order)
-        expanded_norm = jnp.expand_dims(norm_values, axis=axis)
-        return jnp.where(expanded_norm != 0, data / expanded_norm, 0)
-    if norm == "max":
-        norm_values = jnp.max(data, axis=axis)
-        expanded_norm = jnp.expand_dims(norm_values, axis=axis)
-        return jnp.where(expanded_norm != 0, data / expanded_norm, 0)
-    if norm == "bit":
-        abs_data = jnp.abs(data)
-        return jnp.where(abs_data != 0, data / abs_data, 0)
-    msg = f"Unsupported normalization mode {norm!r}."
-    raise ValueError(msg)
-
-
 def is_finite_array(data: Any) -> bool:
     """Return True when every value in the array is finite."""
+    # This intentionally uses NumPy because it is called from Python validation paths.
     return bool(np.isfinite(np.asarray(data)).all())
 
 
@@ -112,10 +30,13 @@ def gaussian_filter_kernel(
     truncate: float = 4.0,
 ) -> Any:
     """Apply a Gaussian filter with SciPy-compatible semantics."""
+    # Gaussian filtering still relies on SciPy's exact implementation semantics.
     arr = jnp.asarray(data)
+    # The callback result shape/dtype is identical to the source array.
     shape_dtype = jax.ShapeDtypeStruct(arr.shape, arr.dtype)
     return jax.pure_callback(
         lambda x: ndimage.gaussian_filter(
+            # Force a private NumPy copy so SciPy can mutate internally if needed.
             np.array(x, copy=True),
             sigma=sigma,
             mode=mode,
@@ -130,22 +51,30 @@ def gaussian_filter_kernel(
 
 
 def _sliding_windows_last_axis(data: jnp.ndarray, window: int) -> jnp.ndarray:
+    # Mirror the historical median-filter edge handling with explicit edge padding.
     pad_left = window // 2
     pad_right = window - 1 - pad_left
-    padded = jnp.pad(data, ((0, 0), (pad_left, pad_right)), mode="edge")
+    pad_width = [(0, 0)] * data.ndim
+    pad_width[-1] = (pad_left, pad_right)
+    padded = jnp.pad(data, tuple(pad_width), mode="edge")
     length = data.shape[-1]
 
     def _slice_at(idx: jnp.ndarray) -> jnp.ndarray:
-        return lax.dynamic_slice_in_dim(padded, idx, window, axis=1)
+        # Slice one fixed-width window out of the padded last axis.
+        return lax.dynamic_slice_in_dim(padded, idx, window, axis=data.ndim - 1)
 
+    # Vectorize over output positions to produce one window per input sample.
     windows = jax.vmap(_slice_at)(jnp.arange(length))
+    # Swap axes so callers get `(rows, length, window)` windows.
     return jnp.swapaxes(windows, 0, 1)
 
 
 def _median_filter_axis(data: jnp.ndarray, axis: int, window: int) -> jnp.ndarray:
+    # Reduce the target axis to the last position so the window helper can be reused.
     moved = jnp.moveaxis(data, axis, -1)
     flat = moved.reshape(-1, moved.shape[-1])
     windows = _sliding_windows_last_axis(flat, window)
+    # Sorting the small window and taking the center reproduces a median.
     med = jnp.sort(windows, axis=-1)[..., window // 2]
     restored = med.reshape(moved.shape)
     return jnp.moveaxis(restored, -1, axis)
@@ -158,6 +87,7 @@ def _median_filter_exact_callback(
 
 
 def _median_filter_exact(data: jnp.ndarray, size: tuple[int, ...]) -> jnp.ndarray:
+    # The exact multidimensional SciPy median is still callback-backed.
     shape_dtype = jax.ShapeDtypeStruct(data.shape, data.dtype)
     return jax.pure_callback(
         lambda x: _median_filter_exact_callback(x, size),
@@ -175,13 +105,16 @@ def hampel_filter_callback_kernel(
 ) -> Any:
     """Apply Hampel filtering via SciPy-compatible host callback."""
     source = jnp.asarray(data)
+    # The callback preserves both shape and dtype of the incoming array.
     shape_dtype = jax.ShapeDtypeStruct(source.shape, source.dtype)
 
     def _callback(x: np.ndarray) -> np.ndarray:
         original = np.asarray(x)
         is_int = original.dtype.kind in {"i", "u"}
+        # Integer inputs are promoted for robust MAD math, then cast back on exit.
         work = original.copy() if not is_int else original.astype(np.float32)
         if approximate:
+            # Approximate mode applies separable 1D median filters per axis.
             med = np.empty_like(work)
             np.copyto(med, work)
             for axis, window in enumerate(size):
@@ -193,6 +126,7 @@ def hampel_filter_callback_kernel(
                     )
                     np.copyto(med, filtered)
             abs_diff = np.abs(work - med)
+            # Reuse the same separable strategy for the MAD estimate.
             mad = np.empty_like(abs_diff)
             np.copyto(mad, abs_diff)
             for axis, window in enumerate(size):
@@ -204,12 +138,15 @@ def hampel_filter_callback_kernel(
                     )
                     np.copyto(mad, filtered)
         else:
+            # Exact mode delegates the full multidimensional median to SciPy.
             med = scipy_median_filter(work, size=size, mode="reflect")
             abs_diff = np.abs(work - med)
             mad = scipy_median_filter(abs_diff, size=size, mode="reflect")
+        # Replace zeros to avoid divide-by-zero when a local window is constant.
         mad_safe = np.where(mad == 0.0, np.finfo(work.dtype).eps, mad)
         out = np.where(abs_diff / mad_safe > threshold, med, work)
         if is_int:
+            # Integer inputs round back to the nearest representable sample value.
             out = np.rint(out)
         return out.astype(original.dtype, copy=False)
 
@@ -225,25 +162,31 @@ def hampel_filter_kernel(
     """Apply a Hampel filter with a native JAX approximate path."""
     source = jnp.asarray(data)
     is_int = jnp.issubdtype(source.dtype, jnp.integer)
+    # Mirror the callback path by promoting integers before the MAD computation.
     compute_dtype = jnp.float32 if is_int else source.dtype
     work = source.astype(compute_dtype)
     if approximate:
+        # Separable medians keep the kernel JAX-native and reasonably cheap.
         med = work
         for axis, window in enumerate(size):
             if window > 1:
                 med = _median_filter_axis(med, axis, window)
         abs_diff = jnp.abs(work - med)
         mad = abs_diff
+        # Apply the same separable median strategy to absolute deviations.
         for axis, window in enumerate(size):
             if window > 1:
                 mad = _median_filter_axis(mad, axis, window)
     else:
+        # The exact path falls back to the SciPy callback helper above.
         med = _median_filter_exact(work, size)
         abs_diff = jnp.abs(work - med)
         mad = _median_filter_exact(abs_diff, size)
+    # Protect constant windows from generating infinities.
     mad_safe = jnp.where(mad == 0.0, jnp.finfo(work.dtype).eps, mad)
     out = jnp.where(abs_diff / mad_safe > threshold, med, work)
     if is_int:
+        # Cast back to the original integer dtype after robust filtering.
         out = jnp.rint(out).astype(source.dtype)
     return out
 
@@ -256,8 +199,10 @@ def design_pass_filter_sos(
 ) -> np.ndarray:
     """Design Butterworth SOS sections matching DASCore's pass_filter."""
     nyquist = 0.5 * sr
+    # DASCore uses nullable bounds; NaN is treated the same as missing here.
     low = None if pd.isnull(filt_min) else filt_min / nyquist
     high = None if pd.isnull(filt_max) else filt_max / nyquist
+    # Validate normalized cutoffs before calling SciPy's filter designer.
     if low is not None and ((0 > low) or (low > 1)):
         raise FilterValueError(
             f"possible filter bounds are [0, {nyquist}] you passed {filt_min}"
@@ -271,6 +216,7 @@ def design_pass_filter_sos(
             "Low filter param must be less than high filter param, "
             f"you passed:filt_min = {filt_min}, filt_max = {filt_max}"
         )
+    # Pick the Butterworth topology from the available cutoffs.
     if (low is not None) and (high is not None):
         z, p, k = iirfilter(
             corners, [low, high], btype="band", ftype="butter", output="zpk"
@@ -297,12 +243,14 @@ def pass_filter_initial_state(sos: np.ndarray) -> np.ndarray:
 def pass_filter_default_padlen(sos: np.ndarray) -> int:
     """Match SciPy's default SOS filtfilt padding heuristic."""
     n_sections = len(sos)
+    # This is SciPy's filtfilt heuristic rewritten for the SOS representation.
     ntaps = 2 * n_sections + 1
     ntaps -= min((sos[:, 2] == 0).sum(), (sos[:, 5] == 0).sum())
     return 3 * ntaps
 
 
 def _normalize_sos(sos: jnp.ndarray) -> jnp.ndarray:
+    # Normalize each section so the recursive denominator starts with a0 == 1.
     a0 = sos[:, 3:4]
     numer = sos[:, :3] / a0
     denom = sos[:, 4:] / a0
@@ -316,14 +264,15 @@ def _sosfilt_rows(
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     n_rows = flat.shape[0]
     if zi_rows is None:
+        # State is `(sections, rows, two-delay-registers)` for each trace.
         states = jnp.zeros((sos.shape[0], n_rows, 2), dtype=flat.dtype)
     else:
         states = jnp.moveaxis(zi_rows, 0, 1)
 
     def _sample_step(carry: jnp.ndarray, x_t: jnp.ndarray):
+        # Scan one sample at a time while explicitly unrolling the short SOS chain.
         y = x_t
         new_states = []
-        # Unroll the short SOS chain so XLA can generate a simpler loop body.
         for idx in range(sos.shape[0]):
             coeff = sos[idx]
             state = carry[idx]
@@ -337,11 +286,13 @@ def _sosfilt_rows(
             new_states.append(jnp.stack([new_z1, new_z2], axis=1))
         return jnp.stack(new_states, axis=0), y
 
+    # Scan over time samples and return both filtered output and final state.
     final_states, ys = lax.scan(_sample_step, states, flat.T)
     return ys.T, jnp.moveaxis(final_states, 0, 1)
 
 
 def _odd_ext_last_axis(flat: jnp.ndarray, edge: int) -> jnp.ndarray:
+    # Odd reflection matches SciPy's filtfilt padding behavior at the boundaries.
     if edge == 0:
         return flat
     left = 2 * flat[:, :1] - flat[:, 1 : edge + 1][:, ::-1]
@@ -358,23 +309,30 @@ def pass_filter_kernel(
     padlen: int | None = None,
 ) -> Any:
     """Apply a Butterworth pass filter with native JAX SOS filtering."""
+    # Move the filter axis last so each row is a trace we can scan over.
     arr = jnp.asarray(data)
     moved = jnp.moveaxis(arr, axis, -1)
     flat = moved.reshape(-1, moved.shape[-1])
+    # SOS coefficients are normalized once up front for stable recursion.
     sos_arr = _normalize_sos(jnp.asarray(sos, dtype=arr.dtype))
 
     if zi is None:
-        zi_arr = jnp.asarray(
-            pass_filter_initial_state(np.asarray(sos)), dtype=arr.dtype
-        )
+        # Traced/JIT use must provide `zi`; only pure NumPy callers can infer it here.
+        if not isinstance(sos, np.ndarray):
+            raise ValueError(
+                "pass_filter_kernel requires zi when used with traced/JAX SOS arrays."
+            )
+        zi_arr = jnp.asarray(pass_filter_initial_state(np.asarray(sos)), dtype=arr.dtype)
     else:
         zi_arr = jnp.asarray(zi, dtype=arr.dtype)
 
     if not zerophase:
+        # Forward-only filtering is a single SOS scan over each trace.
         out_flat, _ = _sosfilt_rows(flat, sos_arr)
         out = out_flat.reshape(moved.shape)
         return jnp.moveaxis(out, -1, axis)
 
+    # Zero-phase filtering uses forward/backward filtering with odd edge extension.
     edge = (
         pass_filter_default_padlen(np.asarray(sos)) if padlen is None else int(padlen)
     )
@@ -385,82 +343,17 @@ def pass_filter_kernel(
         )
         raise ValueError(msg)
     ext = _odd_ext_last_axis(flat, edge)
+    # Broadcast the section state to every flattened trace.
     zi_rows = jnp.broadcast_to(zi_arr[None, :, :], (ext.shape[0],) + zi_arr.shape)
     x0 = ext[:, :1]
     y_flat, _ = _sosfilt_rows(ext, sos_arr, zi_rows=zi_rows * x0[:, :, None])
     y0 = y_flat[:, -1:]
+    # Run the backward pass on reversed data, then flip back into forward order.
     y_rev = jnp.flip(y_flat, axis=1)
     y2_flat, _ = _sosfilt_rows(y_rev, sos_arr, zi_rows=zi_rows * y0[:, :, None])
     out_flat = jnp.flip(y2_flat, axis=1)
     if edge > 0:
+        # Remove the synthetic edge samples after the bidirectional pass.
         out_flat = out_flat[:, edge:-edge]
     out = out_flat.reshape(moved.shape)
-    return jnp.moveaxis(out, -1, axis)
-
-
-def _extract_zero_padded_frames(
-    flat: jnp.ndarray,
-    frame_starts: jnp.ndarray,
-    window_samples: int,
-) -> jnp.ndarray:
-    sample_offsets = jnp.arange(window_samples, dtype=frame_starts.dtype)
-    indices = frame_starts[:, None] + sample_offsets[None, :]
-    valid = (indices >= 0) & (indices < flat.shape[1])
-    clipped = jnp.clip(indices, 0, max(flat.shape[1] - 1, 0))
-    gathered = jnp.take(flat, clipped, axis=1)
-    return jnp.where(valid[None, :, :], gathered, 0)
-
-
-def _linear_detrend_frames(frames: jnp.ndarray) -> jnp.ndarray:
-    window_samples = frames.shape[-1]
-    if window_samples <= 1:
-        return frames
-    x = jnp.arange(window_samples, dtype=frames.dtype)
-    x_mean = 0.5 * (window_samples - 1)
-    denom = window_samples * (window_samples * window_samples - 1) / 12.0
-    sum_y = jnp.sum(frames, axis=-1, keepdims=True)
-    sum_xy = jnp.sum(frames * x, axis=-1, keepdims=True)
-    slope = (sum_xy - x_mean * sum_y) / denom
-    intercept = sum_y / window_samples - slope * x_mean
-    return frames - (slope * x + intercept)
-
-
-@functools.partial(jax.jit, static_argnames=("axis", "detrend"))
-def banded_stft_kernel(
-    data: Any,
-    *,
-    axis: int,
-    window: Any,
-    frame_starts: Any,
-    selected_bins: Any,
-    sample_step: float,
-    detrend: bool = False,
-) -> Any:
-    """Compute banded STFT magnitude sums over selected frequency bins."""
-    arr = jnp.asarray(data)
-    nan_mask = ~jnp.isfinite(arr)
-    arr = jnp.where(~nan_mask, arr, jnp.zeros_like(arr))
-    moved = jnp.moveaxis(arr, axis, -1)
-    flat = moved.reshape(-1, moved.shape[-1])
-    # Track which output frames overlapped any non-finite input sample so they
-    # can be zeroed, matching DASCore's nansum semantics.
-    moved_nan = jnp.moveaxis(nan_mask, axis, -1)
-    flat_nan = moved_nan.reshape(-1, moved_nan.shape[-1])
-    window_arr = jnp.asarray(window, dtype=arr.dtype)
-    frame_starts_arr = jnp.asarray(frame_starts)
-    selected_bins_arr = jnp.asarray(selected_bins)
-    nan_in_frames = _extract_zero_padded_frames(
-        flat_nan.astype(jnp.float32), frame_starts_arr, window_arr.shape[0]
-    )
-    frame_has_nan = jnp.any(nan_in_frames > 0, axis=-1)
-    frames = _extract_zero_padded_frames(flat, frame_starts_arr, window_arr.shape[0])
-    if detrend:
-        frames = _linear_detrend_frames(frames)
-    tapered = frames * window_arr
-    spectrum = jnp.fft.rfft(tapered, axis=-1)
-    reduced = jnp.sum(jnp.abs(spectrum[..., selected_bins_arr]), axis=-1) * abs(
-        sample_step
-    )
-    reduced = jnp.where(frame_has_nan, 0.0, reduced)
-    out = reduced.reshape(moved.shape[:-1] + (frame_starts_arr.shape[0],))
     return jnp.moveaxis(out, -1, axis)

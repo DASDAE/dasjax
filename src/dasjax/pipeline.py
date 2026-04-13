@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, ClassVar
@@ -10,8 +11,12 @@ import jax
 import numpy as np
 from jax import tree_util
 
-from .operations import get_operation
+from .operations import ExecutionPolicy, get_operation
 from .pytree import patch_to_leaves, patch_from_leaves
+
+_COMPILED_CACHE_MAXSIZE = 128
+_SEGMENT_CACHE_MAXSIZE = 128
+_VALIDATION_CACHE_MAXSIZE = 64
 
 
 @dataclass(frozen=True)
@@ -21,6 +26,29 @@ class PipelineStep:
     name: str
     args: tuple[Any, ...]
     kwargs: dict[str, Any]
+
+
+class _BoundedCache:
+    """A small insertion-ordered cache with LRU eviction."""
+
+    def __init__(self, maxsize: int) -> None:
+        self.maxsize = maxsize
+        self._values: OrderedDict[Any, Any] = OrderedDict()
+
+    def get(self, key: Any, default: Any = None) -> Any:
+        value = self._values.get(key, default)
+        if key in self._values:
+            self._values.move_to_end(key)
+        return value
+
+    def add(self, key: Any, value: Any) -> None:
+        self._values[key] = value
+        self._values.move_to_end(key)
+        while len(self._values) > self.maxsize:
+            self._values.popitem(last=False)
+
+    def __len__(self) -> int:
+        return len(self._values)
 
 
 def _freeze_device(device: jax.Device | None) -> Any:
@@ -79,31 +107,33 @@ def _freeze_value(value: Any) -> Any:
 def _build_segments(
     resolved_steps: tuple[tuple[Any, tuple[Any, ...], dict[str, Any]], ...],
 ) -> list[tuple[str, Any]]:
-    """Split resolved steps into JIT segments and eager (shape-changing) steps.
+    """Split resolved steps into fused leaf segments and patch-executed steps.
 
     Returns a list of tagged tuples:
-      ("jit",   tuple_of_resolved_steps)   — compiled as a single jax.jit block
-      ("eager", (op, args, kwargs))         — executed via op.patch_impl
+      ("leaf",  tuple_of_resolved_steps)    — compiled as a single jax.jit block
+      ("patch", (op, args, kwargs))         — executed via op.patch_impl
     """
     segments: list[tuple[str, Any]] = []
-    jit_run: list[Any] = []
+    leaf_run: list[Any] = []
     for op, args, kwargs in resolved_steps:
-        if op.shape_changing:
-            if jit_run:
-                segments.append(("jit", tuple(jit_run)))
-                jit_run = []
-            segments.append(("eager", (op, args, kwargs)))
+        if op.execution_policy is ExecutionPolicy.PATCH:
+            if leaf_run:
+                segments.append(("leaf", tuple(leaf_run)))
+                leaf_run = []
+            segments.append(("patch", (op, args, kwargs)))
         else:
-            jit_run.append((op, args, kwargs))
-    if jit_run:
-        segments.append(("jit", tuple(jit_run)))
+            leaf_run.append((op, args, kwargs))
+    if leaf_run:
+        segments.append(("leaf", tuple(leaf_run)))
     return segments
 
 
 class JaxPatchPipeline:
     """A reusable recipe composed of registered dasjax operations."""
 
-    _compiled_cache: ClassVar[dict[tuple[Any, ...], Callable[[Any], Any]]] = {}
+    _compiled_cache: ClassVar[_BoundedCache] = _BoundedCache(
+        maxsize=_COMPILED_CACHE_MAXSIZE
+    )
 
     def __init__(self, steps: tuple[PipelineStep, ...] = ()) -> None:
         self._steps = steps
@@ -145,6 +175,27 @@ class JaxPatchPipeline:
             assert_no_fallback,
         )
 
+    @staticmethod
+    def _validation_signature(patch) -> tuple[Any, ...]:
+        data = np.asarray(patch.data)
+        coord_sig = tuple(
+            (
+                name,
+                tuple(patch.coords.dim_map[name]),
+                np.asarray(coord.values).dtype.str,
+                len(coord),
+                getattr(coord, "step", None),
+            )
+            for name, coord in patch.coords.coord_map.items()
+        )
+        return (
+            tuple(patch.dims),
+            tuple(patch.shape),
+            data.dtype.str,
+            bool(np.isfinite(data).all()),
+            coord_sig,
+        )
+
     def _resolve_steps(self) -> tuple[tuple[Any, tuple[Any, ...], dict[str, Any]], ...]:
         """Resolve operation names into operation specs once."""
         return tuple(
@@ -172,6 +223,7 @@ class JaxPatchPipeline:
 
         def _run(data, coord_leaves, dims):
             for op, args, kwargs in resolved_steps:
+                assert op.leaf_transform is not None
                 data, coord_leaves = op.leaf_transform(
                     data,
                     coord_leaves,
@@ -210,10 +262,9 @@ class JaxPatchPipeline:
     ):
         """Compile the recorded steps into a callable `Patch -> Patch`.
 
-        Shape-preserving operations are fused into jax.jit-compiled segments.
-        Shape-changing operations (e.g. fbe) run eagerly via patch_impl between
-        those segments, so the compiled function correctly handles pipelines like
-        ``scale → fbe → normalize``.
+        Leaf-native operations are fused into jax.jit-compiled segments.
+        Patch-native operations run eagerly via patch_impl between those
+        segments, so compiled pipelines can mix both execution modes.
         """
         target_device = _resolve_target_device(device=device, backend=backend)
         cache_key = self._compile_cache_key(
@@ -227,39 +278,48 @@ class JaxPatchPipeline:
 
         resolved_steps = self._resolve_steps()
         segments = _build_segments(resolved_steps)
-        # One inner cache dict per JIT segment (None for eager slots).
+        # One inner cache dict per leaf segment (None for patch slots).
         compiled_by_segment: list[
-            dict[tuple[Any, ...], Callable[[Any, Any, Any], Any]] | None
-        ] = [{} if kind == "jit" else None for kind, _ in segments]
+            _BoundedCache | None
+        ] = [
+            _BoundedCache(maxsize=_SEGMENT_CACHE_MAXSIZE) if kind == "leaf" else None
+            for kind, _ in segments
+        ]
+        validated_signatures = _BoundedCache(maxsize=_VALIDATION_CACHE_MAXSIZE)
+        fallback_checked_signatures = _BoundedCache(maxsize=_VALIDATION_CACHE_MAXSIZE)
 
         def _compiled_patch_fn(patch):
-            if assert_no_fallback:
+            patch_signature = self._validation_signature(patch)
+            if assert_no_fallback and fallback_checked_signatures.get(patch_signature) is None:
                 self.assert_no_fallback(patch)
-            for op, args, kwargs in resolved_steps:
-                if op.validate_patch is not None:
-                    op.validate_patch(patch, *args, **kwargs)
-                if op.validate_compiled_patch is not None:
-                    op.validate_compiled_patch(patch, args, kwargs)
+                fallback_checked_signatures.add(patch_signature, True)
+            if validated_signatures.get(patch_signature) is None:
+                for op, args, kwargs in resolved_steps:
+                    if op.validate_patch is not None:
+                        op.validate_patch(patch, *args, **kwargs)
+                    if op.validate_compiled_patch is not None:
+                        op.validate_compiled_patch(patch, args, kwargs)
+                validated_signatures.add(patch_signature, True)
 
             current_patch = patch
             for seg_idx, (kind, seg_data) in enumerate(segments):
-                if kind == "eager":
+                if kind == "patch":
                     op, args, kwargs = seg_data
                     current_patch = op.patch_impl(current_patch, *args, **kwargs)
                 else:
-                    jit_steps = seg_data
+                    leaf_steps = seg_data
                     prepared_steps = tuple(
                         (op, *op.prepare_call(current_patch, args, kwargs))
                         if op.prepare_call is not None
                         else (op, args, kwargs)
-                        for op, args, kwargs in jit_steps
+                        for op, args, kwargs in leaf_steps
                     )
                     prepared_key = self._freeze_resolved_steps(prepared_steps)
                     seg_cache = compiled_by_segment[seg_idx]
                     compiled = seg_cache.get(prepared_key)
                     if compiled is None:
                         compiled = self._compile_leaf_runner(prepared_steps)
-                        seg_cache[prepared_key] = compiled
+                        seg_cache.add(prepared_key, compiled)
                     data, coord_leaves, aux_data = patch_to_leaves(current_patch)
                     if target_device is not None:
                         data = jax.device_put(data, device=target_device)
@@ -272,11 +332,17 @@ class JaxPatchPipeline:
                         coord_leaves,
                         aux_data["dims"],
                     )
+                    next_kind = (
+                        segments[seg_idx + 1][0] if seg_idx + 1 < len(segments) else None
+                    )
                     current_patch = patch_from_leaves(
-                        out_data, out_coord_leaves, aux_data
+                        out_data,
+                        out_coord_leaves,
+                        aux_data,
+                        coerce_numpy=next_kind == "patch",
                     )
 
             return current_patch
 
-        self._compiled_cache[cache_key] = _compiled_patch_fn
+        self._compiled_cache.add(cache_key, _compiled_patch_fn)
         return _compiled_patch_fn

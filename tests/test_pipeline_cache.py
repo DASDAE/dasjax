@@ -177,3 +177,13 @@ def test_compile_accepts_explicit_device() -> None:
     out = compiled(patch)
 
     assert out.equals(_run_operation(patch, "scale", 2.0))
+
+
+def test_compile_cache_is_bounded() -> None:
+    cache = JaxPatchPipeline._compiled_cache
+    maxsize = cache.maxsize
+
+    for idx in range(maxsize + 10):
+        JaxPatchPipeline().scale(float(idx)).compile()
+
+    assert len(cache) <= maxsize

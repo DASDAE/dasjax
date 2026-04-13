@@ -67,6 +67,8 @@ def patch_from_leaves(
     data: Any,
     coord_leaves: tuple[Any, ...],
     aux_data: dict[str, Any],
+    *,
+    coerce_numpy: bool = True,
 ) -> dc.Patch:
     """Rebuild a patch from pytree leaves and static metadata."""
     coords: dict[str, Any] = {}
@@ -78,7 +80,7 @@ def patch_from_leaves(
             coord if len(dims) == 1 and dims[0] == meta["name"] else (dims, coord)
         )
     return dc.Patch(
-        data=np.asarray(data),
+        data=np.asarray(data) if coerce_numpy else data,
         coords=coords,
         dims=aux_data["dims"],
         attrs=aux_data["attrs"],
