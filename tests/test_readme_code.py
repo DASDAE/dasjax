@@ -37,5 +37,6 @@ def _readme_usage_blocks() -> list[str]:
 
 @pytest.mark.parametrize("code", _readme_usage_blocks())
 def test_readme_usage_examples_execute(code: str) -> None:
+    """Execute each README usage example without errors."""
     namespace = {"__name__": "__readme_example__"}
     exec(code, namespace)

@@ -96,7 +96,9 @@ def _uniform_wrap_kernel(data: jnp.ndarray, window_len: int) -> jnp.ndarray:
     # Whitening smooths the amplitude spectrum with circular edge handling.
     pad_left = window_len // 2
     pad_right = window_len - 1 - pad_left
-    padded = jnp.concatenate([data[..., -pad_left:], data, data[..., :pad_right]], axis=-1)
+    padded = jnp.concatenate(
+        [data[..., -pad_left:], data, data[..., :pad_right]], axis=-1
+    )
     kernel = jnp.ones((window_len,), dtype=data.dtype) / window_len
 
     def _convolve(row: jnp.ndarray) -> jnp.ndarray:
@@ -140,7 +142,9 @@ def whiten_kernel(
     phase_only = fft_data / norm_amp
     if freq_weight is not None:
         # Optional frequency weighting is applied in the spectrum before inversion.
-        phase_only = apply_1d_weight_kernel(phase_only, axis=phase_only.ndim - 1, weight=freq_weight)
+        phase_only = apply_1d_weight_kernel(
+            phase_only, axis=phase_only.ndim - 1, weight=freq_weight
+        )
     if is_real:
         out = jnp.fft.irfft(phase_only, n=moved.shape[-1], axis=-1)
     else:

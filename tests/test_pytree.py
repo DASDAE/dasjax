@@ -15,6 +15,7 @@ def _run_operation(patch, name: str, *args, **kwargs):
 
 
 def test_patch_pytree_roundtrip() -> None:
+    """Round-trip a patch through the registered pytree hooks."""
     patch = dc.get_example_patch()
 
     leaves, tree = jax.tree_util.tree_flatten(patch)
@@ -24,6 +25,7 @@ def test_patch_pytree_roundtrip() -> None:
 
 
 def test_patch_pytree_restores_datetime_coords() -> None:
+    """Restore datetime coordinates after pytree reconstruction."""
     patch = dc.get_example_patch()
 
     leaves, tree = jax.tree_util.tree_flatten(patch)
@@ -37,6 +39,7 @@ def test_patch_pytree_restores_datetime_coords() -> None:
 
 
 def test_patch_tree_map_updates_data_and_coords() -> None:
+    """Apply tree_map updates to both data and coordinate leaves."""
     patch = dc.get_example_patch()
 
     out = jax.tree_util.tree_map(lambda x: x + 1, patch)
@@ -54,6 +57,7 @@ def test_patch_tree_map_updates_data_and_coords() -> None:
 
 
 def test_pipeline_compile_returns_callable_patch_transform() -> None:
+    """Compile pipelines into callables that transform patches."""
     patch = dc.get_example_patch()
     pipeline = JaxPatchPipeline().identity().scale(2.0).scale(3.0)
 
@@ -67,12 +71,14 @@ def test_pipeline_compile_returns_callable_patch_transform() -> None:
 
 @pytest.mark.parametrize("operation_name", list_operations())
 def test_pipeline_accepts_registered_operations(operation_name: str) -> None:
+    """Expose every registered operation as a pipeline method."""
     pipeline = getattr(JaxPatchPipeline(), operation_name)
 
     assert callable(pipeline)
 
 
 def test_pipeline_chains_multiple_operations() -> None:
+    """Match eager behavior when chaining multiple pipeline operations."""
     patch = dc.get_example_patch()
     pipeline = (
         JaxPatchPipeline()
@@ -104,6 +110,7 @@ def test_pipeline_chains_multiple_operations() -> None:
 
 
 def test_pipeline_rejects_unknown_operations() -> None:
+    """Reject attempts to call unknown pipeline operations."""
     pipeline = JaxPatchPipeline()
 
     try:

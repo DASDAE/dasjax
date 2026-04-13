@@ -13,7 +13,7 @@ from dascore.proc.basic import standardize as dc_standardize
 
 from dasjax import kernels
 
-from ..common import offset_patch, prepare_complex_patch
+from ..common import prepare_complex_patch
 from ..types import ExecutionPolicy, OperationCase, OperationSpec, empty_call
 from . import impl
 
@@ -22,15 +22,21 @@ OPERATIONS: tuple[OperationSpec, ...] = (
         name="identity",
         execution_policy=ExecutionPolicy.LEAF,
         patch_impl=dc.patch_function(history=None)(impl.identity_patch),
+        patch_op_cls=impl.IdentityOp,
         leaf_transform=impl.identity_leaves,
         test_cases=(
-            OperationCase(case_id="identity", resolve_call=empty_call, baseline=lambda patch, args, kwargs: patch),
+            OperationCase(
+                case_id="identity",
+                resolve_call=empty_call,
+                baseline=lambda patch, args, kwargs: patch,
+            ),
         ),
     ),
     OperationSpec(
         name="scale",
         execution_policy=ExecutionPolicy.LEAF,
         patch_impl=dc.patch_function(history="method_name")(impl.scale_patch),
+        patch_op_cls=impl.ScaleOp,
         leaf_transform=impl.scale_leaves,
         test_cases=tuple(
             OperationCase(
@@ -45,6 +51,7 @@ OPERATIONS: tuple[OperationSpec, ...] = (
         name="add",
         execution_policy=ExecutionPolicy.LEAF,
         patch_impl=dc.patch_function(history="method_name")(impl.add_patch),
+        patch_op_cls=impl.AddOp,
         leaf_transform=impl.add_leaves,
         test_cases=tuple(
             OperationCase(
@@ -59,6 +66,7 @@ OPERATIONS: tuple[OperationSpec, ...] = (
         name="abs",
         execution_policy=ExecutionPolicy.LEAF,
         patch_impl=dc.patch_function(history="method_name")(impl.abs_patch),
+        patch_op_cls=impl.AbsOp,
         leaf_transform=impl.abs_leaves,
         test_cases=(
             OperationCase(
@@ -73,6 +81,7 @@ OPERATIONS: tuple[OperationSpec, ...] = (
         name="clip",
         execution_policy=ExecutionPolicy.LEAF,
         patch_impl=dc.patch_function(history="method_name")(impl.clip_patch),
+        patch_op_cls=impl.ClipOp,
         leaf_transform=impl.clip_leaves,
         test_cases=tuple(
             OperationCase(
@@ -89,6 +98,7 @@ OPERATIONS: tuple[OperationSpec, ...] = (
         name="real",
         execution_policy=ExecutionPolicy.LEAF,
         patch_impl=dc.patch_function(history="method_name")(impl.real_patch),
+        patch_op_cls=impl.RealOp,
         leaf_transform=impl.real_leaves,
         test_cases=(
             OperationCase(
@@ -103,6 +113,7 @@ OPERATIONS: tuple[OperationSpec, ...] = (
         name="imag",
         execution_policy=ExecutionPolicy.LEAF,
         patch_impl=dc.patch_function(history="method_name")(impl.imag_patch),
+        patch_op_cls=impl.ImagOp,
         leaf_transform=impl.imag_leaves,
         test_cases=(
             OperationCase(
@@ -117,6 +128,7 @@ OPERATIONS: tuple[OperationSpec, ...] = (
         name="angle",
         execution_policy=ExecutionPolicy.LEAF,
         patch_impl=dc.patch_function(history="method_name")(impl.angle_patch),
+        patch_op_cls=impl.AngleOp,
         leaf_transform=impl.angle_leaves,
         test_cases=(
             OperationCase(
@@ -131,6 +143,7 @@ OPERATIONS: tuple[OperationSpec, ...] = (
         name="conj",
         execution_policy=ExecutionPolicy.LEAF,
         patch_impl=dc.patch_function(history="method_name")(impl.conj_patch),
+        patch_op_cls=impl.ConjOp,
         leaf_transform=impl.conj_leaves,
         test_cases=(
             OperationCase(
@@ -145,16 +158,21 @@ OPERATIONS: tuple[OperationSpec, ...] = (
         name="flip",
         execution_policy=ExecutionPolicy.PATCH,
         patch_impl=dc.patch_function(history="method_name")(impl.flip_patch),
+        patch_op_cls=impl.FlipOp,
         test_cases=(
             OperationCase(
                 case_id="flip-time",
                 resolve_call=lambda patch: ((patch.dims[-1],), {"flip_coords": True}),
-                baseline=lambda patch, args, kwargs: dc_flip.func(patch, *args, **kwargs),
+                baseline=lambda patch, args, kwargs: dc_flip.func(
+                    patch, *args, **kwargs
+                ),
             ),
             OperationCase(
                 case_id="flip-all-no-coords",
                 resolve_call=lambda patch: (tuple(patch.dims), {"flip_coords": False}),
-                baseline=lambda patch, args, kwargs: dc_flip.func(patch, *args, **kwargs),
+                baseline=lambda patch, args, kwargs: dc_flip.func(
+                    patch, *args, **kwargs
+                ),
             ),
         ),
     ),
@@ -162,6 +180,7 @@ OPERATIONS: tuple[OperationSpec, ...] = (
         name="roll",
         execution_policy=ExecutionPolicy.LEAF,
         patch_impl=dc.patch_function(history="method_name")(impl.roll_patch),
+        patch_op_cls=impl.RollOp,
         leaf_transform=impl.roll_leaves,
         prepare_call=impl.prepare_roll_call,
         validate_compiled_patch=impl.validate_roll_compiled_input,
@@ -169,13 +188,20 @@ OPERATIONS: tuple[OperationSpec, ...] = (
             OperationCase(
                 case_id="roll-samples",
                 resolve_call=lambda patch: ((), {"samples": True, patch.dims[-1]: 5}),
-                baseline=lambda patch, args, kwargs: dc_roll.func(patch, *args, **kwargs),
+                baseline=lambda patch, args, kwargs: dc_roll.func(
+                    patch, *args, **kwargs
+                ),
                 compiled_guard=impl.guard_compiled_roll_case,
             ),
             OperationCase(
                 case_id="roll-coord-update",
-                resolve_call=lambda patch: ((), {"samples": True, "update_coord": True, patch.dims[-1]: 3}),
-                baseline=lambda patch, args, kwargs: dc_roll.func(patch, *args, **kwargs),
+                resolve_call=lambda patch: (
+                    (),
+                    {"samples": True, "update_coord": True, patch.dims[-1]: 3},
+                ),
+                baseline=lambda patch, args, kwargs: dc_roll.func(
+                    patch, *args, **kwargs
+                ),
                 compiled_guard=impl.guard_compiled_roll_case,
             ),
         ),
@@ -184,11 +210,14 @@ OPERATIONS: tuple[OperationSpec, ...] = (
         name="standardize",
         execution_policy=ExecutionPolicy.PATCH,
         patch_impl=dc.patch_function(history="method_name")(impl.standardize_patch),
+        patch_op_cls=impl.StandardizeOp,
         test_cases=(
             OperationCase(
                 case_id="standardize-time",
                 resolve_call=lambda patch: ((), {"dim": patch.dims[-1]}),
-                baseline=lambda patch, args, kwargs: dc_standardize.func(patch, *args, **kwargs),
+                baseline=lambda patch, args, kwargs: dc_standardize.func(
+                    patch, *args, **kwargs
+                ),
             ),
         ),
     ),

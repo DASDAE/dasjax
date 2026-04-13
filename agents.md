@@ -57,7 +57,8 @@ Unless otherwise specified, a job is not finished until the relevant checks pass
 - Group tests in classes.
 - Place fixtures as close as practical to usage (class, module, then `conftest.py`).
 - Write tests that focus on boundaries, not implementation details.
-- Keep test names short; put extra detail in the docstring when needed.
+- Every test function or method should include a short docstring.
+- Keep test names short; put extra detail in the docstring.
 
 
 ## Code conventions

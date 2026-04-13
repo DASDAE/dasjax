@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections import OrderedDict
-from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
@@ -12,6 +11,7 @@ import numpy as np
 from jax import tree_util
 
 from .operations import ExecutionPolicy, get_operation
+from .operations.patch_ops import patch_to_state_spec
 from .pytree import patch_to_leaves, patch_from_leaves
 
 _COMPILED_CACHE_MAXSIZE = 128
@@ -107,22 +107,58 @@ def _freeze_value(value: Any) -> Any:
 def _build_segments(
     resolved_steps: tuple[tuple[Any, tuple[Any, ...], dict[str, Any]], ...],
 ) -> list[tuple[str, Any]]:
-    """Split resolved steps into fused leaf segments and patch-executed steps.
+    """Split steps into compiled segments and eager patch-executed steps.
 
     Returns a list of tagged tuples:
-      ("leaf",  tuple_of_resolved_steps)    — compiled as a single jax.jit block
-      ("patch", (op, args, kwargs))         — executed via op.patch_impl
+      ("patchop", tuple_of_resolved_steps)      — compiled PatchOp segment
+      ("leaf",  tuple_of_resolved_steps)        — compiled legacy leaf segment
+      ("patch", (op, args, kwargs))             — eager patch_impl step
     """
     segments: list[tuple[str, Any]] = []
+    patchop_run: list[Any] = []
+    patchop_has_structural = False
     leaf_run: list[Any] = []
     for op, args, kwargs in resolved_steps:
+        if op.patch_op_cls is not None:
+            if leaf_run:
+                segments.append(("leaf", tuple(leaf_run)))
+                leaf_run = []
+            if (
+                patchop_run
+                and patchop_has_structural
+                and getattr(
+                    op.patch_op_cls, "requires_materialized_patch_for_prepare", False
+                )
+            ):
+                segments.append(("patchop", tuple(patchop_run)))
+                patchop_run = []
+                patchop_has_structural = False
+            patchop_run.append((op, args, kwargs))
+            patchop_has_structural = patchop_has_structural or getattr(
+                op.patch_op_cls, "mutates_spec", False
+            )
+            if getattr(op.patch_op_cls, "requires_materialized_patch_after", False):
+                segments.append(("patchop", tuple(patchop_run)))
+                patchop_run = []
+                patchop_has_structural = False
+            continue
         if op.execution_policy is ExecutionPolicy.PATCH:
+            if patchop_run:
+                segments.append(("patchop", tuple(patchop_run)))
+                patchop_run = []
+                patchop_has_structural = False
             if leaf_run:
                 segments.append(("leaf", tuple(leaf_run)))
                 leaf_run = []
             segments.append(("patch", (op, args, kwargs)))
         else:
+            if patchop_run:
+                segments.append(("patchop", tuple(patchop_run)))
+                patchop_run = []
+                patchop_has_structural = False
             leaf_run.append((op, args, kwargs))
+    if patchop_run:
+        segments.append(("patchop", tuple(patchop_run)))
     if leaf_run:
         segments.append(("leaf", tuple(leaf_run)))
     return segments
@@ -235,6 +271,18 @@ class JaxPatchPipeline:
 
         return jax.jit(_run, static_argnums=2)
 
+    @staticmethod
+    def _compile_patchop_runner(prepared_ops: tuple[Any, ...]):
+        """Compile one unified PatchOp segment."""
+
+        def _run(state):
+            current_state = state
+            for prepared_op in prepared_ops:
+                current_state = prepared_op.apply(current_state)
+            return current_state
+
+        return jax.jit(_run)
+
     def _get_compiled_fallback_reasons(self, patch) -> tuple[str, ...]:
         resolved_steps = self._resolve_steps()
         reasons = []
@@ -279,10 +327,10 @@ class JaxPatchPipeline:
         resolved_steps = self._resolve_steps()
         segments = _build_segments(resolved_steps)
         # One inner cache dict per leaf segment (None for patch slots).
-        compiled_by_segment: list[
-            _BoundedCache | None
-        ] = [
-            _BoundedCache(maxsize=_SEGMENT_CACHE_MAXSIZE) if kind == "leaf" else None
+        compiled_by_segment: list[_BoundedCache | None] = [
+            _BoundedCache(maxsize=_SEGMENT_CACHE_MAXSIZE)
+            if kind in {"leaf", "patchop"}
+            else None
             for kind, _ in segments
         ]
         validated_signatures = _BoundedCache(maxsize=_VALIDATION_CACHE_MAXSIZE)
@@ -290,7 +338,10 @@ class JaxPatchPipeline:
 
         def _compiled_patch_fn(patch):
             patch_signature = self._validation_signature(patch)
-            if assert_no_fallback and fallback_checked_signatures.get(patch_signature) is None:
+            if (
+                assert_no_fallback
+                and fallback_checked_signatures.get(patch_signature) is None
+            ):
                 self.assert_no_fallback(patch)
                 fallback_checked_signatures.add(patch_signature, True)
             if validated_signatures.get(patch_signature) is None:
@@ -306,6 +357,33 @@ class JaxPatchPipeline:
                 if kind == "patch":
                     op, args, kwargs = seg_data
                     current_patch = op.patch_impl(current_patch, *args, **kwargs)
+                elif kind == "patchop":
+                    prepared_ops = tuple(
+                        op.patch_op_cls.prepare(current_patch, *args, **kwargs)
+                        for op, args, kwargs in seg_data
+                    )
+                    prepared_key = tuple(
+                        prepared_op.compile_key() for prepared_op in prepared_ops
+                    )
+                    seg_cache = compiled_by_segment[seg_idx]
+                    compiled = seg_cache.get(prepared_key)
+                    if compiled is None:
+                        compiled = self._compile_patchop_runner(prepared_ops)
+                        seg_cache.add(prepared_key, compiled)
+                    state, spec = patch_to_state_spec(current_patch)
+                    if target_device is not None:
+                        state = tree_util.tree_map(
+                            lambda x: jax.device_put(x, device=target_device), state
+                        )
+                    out_state = compiled(state)
+                    out_spec = spec
+                    for prepared_op in prepared_ops:
+                        out_spec = out_spec.apply_meta(prepared_op.meta_delta(out_spec))
+                    current_patch = prepared_ops[-1].reconstruct(
+                        current_patch,
+                        out_spec,
+                        out_state,
+                    )
                 else:
                     leaf_steps = seg_data
                     prepared_steps = tuple(
@@ -333,13 +411,15 @@ class JaxPatchPipeline:
                         aux_data["dims"],
                     )
                     next_kind = (
-                        segments[seg_idx + 1][0] if seg_idx + 1 < len(segments) else None
+                        segments[seg_idx + 1][0]
+                        if seg_idx + 1 < len(segments)
+                        else None
                     )
                     current_patch = patch_from_leaves(
                         out_data,
                         out_coord_leaves,
                         aux_data,
-                        coerce_numpy=next_kind == "patch",
+                        coerce_numpy=next_kind != "leaf",
                     )
 
             return current_patch

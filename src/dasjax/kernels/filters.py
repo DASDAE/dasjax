@@ -322,7 +322,9 @@ def pass_filter_kernel(
             raise ValueError(
                 "pass_filter_kernel requires zi when used with traced/JAX SOS arrays."
             )
-        zi_arr = jnp.asarray(pass_filter_initial_state(np.asarray(sos)), dtype=arr.dtype)
+        zi_arr = jnp.asarray(
+            pass_filter_initial_state(np.asarray(sos)), dtype=arr.dtype
+        )
     else:
         zi_arr = jnp.asarray(zi, dtype=arr.dtype)
 

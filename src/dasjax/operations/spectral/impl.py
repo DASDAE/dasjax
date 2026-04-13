@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 import dascore as dc
+import jax.numpy as jnp
 import numpy as np
 from dascore.constants import PatchType
 from dascore.exceptions import ParameterError
@@ -18,11 +20,181 @@ from dascore.units import invert_quantity
 from dascore.utils.patch import get_dim_axis_value
 from dascore.utils.time import is_datetime64, is_timedelta64
 from dascore.utils.transformatter import FourierTransformatter
+from scipy.fft import next_fast_len
 from scipy.signal import ShortTimeFFT, get_window
 
 from dasjax import kernels
 
 from ..common import get_axis_from_dims
+from ..patch_ops import EagerPatchOp, PatchOp
+
+
+def _pad_encoded_value(value: Any) -> tuple[Any, str]:
+    arr = np.asarray(value)
+    if is_datetime64(arr.dtype) or is_timedelta64(arr.dtype):
+        return arr.view(np.int64), "int64"
+    return arr, str(arr.dtype)
+
+
+@dataclass(frozen=True)
+class PadOp(PatchOp):
+    """Compiled pad operation over patch state."""
+
+    data_pad_width: tuple[tuple[int, int], ...]
+    coord_pad_widths: dict[str, tuple[int, int]]
+    coord_generators: dict[str, tuple[str, Any, Any, int]]
+    mode: str = "constant"
+    constant_values: float = 0.0
+    mutates_spec = True
+    requires_materialized_patch_for_prepare = True
+    compile_category = "compiled_boundary"
+
+    @classmethod
+    def prepare(
+        cls,
+        patch: PatchType,
+        mode: str = "constant",
+        constant_values: Any = 0,
+        expand_coords: bool = True,
+        samples: bool = False,
+        **kwargs,
+    ) -> "PadOp":
+        if isinstance(constant_values, tuple | list | np.ndarray):
+            raise ParameterError("constant_values must be a scalar, not a sequence.")
+        pad_width = [(0, 0)] * len(patch.shape)
+        coord_pad_widths: dict[str, tuple[int, int]] = {}
+        coord_generators: dict[str, tuple[str, Any, Any, int]] = {}
+        dimfo = get_dim_axis_value(patch, kwargs=kwargs, allow_multiple=True)
+        for dim, axis, value in dimfo:
+            if not samples and patch.get_coord(dim).step is None:
+                msg = f"Coordinate {dim} is not evenly sampled as required by pad"
+                raise dc.exceptions.CoordError(msg)
+            coord = patch.get_coord(dim, require_evenly_sampled=False)
+            if value in {"fft", "correlate"}:
+                target_length = len(coord) if value == "fft" else 2 * len(coord) - 1
+                pad_tuple = (0, next_fast_len(target_length) - len(coord))
+            else:
+                if not isinstance(value, tuple | list):
+                    value = (value, value)
+                pad_tuple = (
+                    tuple(int(coord.get_sample_count(x)) for x in value)
+                    if not samples
+                    else tuple(int(x) for x in value)
+                )
+            pad_width[axis] = pad_tuple
+            coord_pad_widths[dim] = pad_tuple
+            if expand_coords and coord.evenly_sampled:
+                start_value, _ = _pad_encoded_value(coord.min())
+                step_value, _ = _pad_encoded_value(coord.step)
+                coord_generators[dim] = (
+                    "range",
+                    np.asarray(start_value),
+                    np.asarray(step_value),
+                    len(coord) + sum(pad_tuple),
+                )
+            else:
+                coord_values, dtype_name = _pad_encoded_value(coord.values)
+                if np.issubdtype(np.asarray(coord_values).dtype, np.integer):
+                    coord_values = np.asarray(coord_values, dtype=np.float64)
+                    null_value = np.nan
+                else:
+                    null_value = np.nan
+                coord_generators[dim] = (
+                    "pad",
+                    np.asarray(coord_values),
+                    np.asarray(null_value, dtype=np.asarray(coord_values).dtype),
+                    0,
+                )
+        return cls(
+            data_pad_width=tuple(tuple(x) for x in pad_width),
+            coord_pad_widths=coord_pad_widths,
+            coord_generators=coord_generators,
+            mode=mode,
+            constant_values=float(constant_values),
+        )
+
+    def kernel(self, state):
+        out_coords = {}
+        for name, kind_data in self.coord_generators.items():
+            kind, arg1, arg2, size = kind_data
+            if kind == "range":
+                before, _ = self.coord_pad_widths[name]
+                out_coords[name] = (
+                    arg1
+                    - before * arg2
+                    + jnp.arange(size, dtype=jnp.asarray(arg1).dtype) * arg2
+                )
+            else:
+                out_coords[name] = jnp.pad(
+                    jnp.asarray(arg1),
+                    self.coord_pad_widths[name],
+                    mode="constant",
+                    constant_values=jnp.asarray(arg2),
+                )
+        return {
+            "data": jnp.pad(
+                state.data,
+                self.data_pad_width,
+                mode=self.mode,
+                constant_values=self.constant_values,
+            ),
+            "coords": out_coords,
+        }
+
+
+@dataclass(frozen=True)
+class DftOp(EagerPatchOp):
+    """Unified eager-backed dft operation."""
+
+    patch_impl_fn = staticmethod(dc_dft.func)
+
+
+@dataclass(frozen=True)
+class IdftOp(EagerPatchOp):
+    """Unified eager-backed idft operation."""
+
+    patch_impl_fn = staticmethod(dc_idft.func)
+
+
+@dataclass(frozen=True)
+class HilbertOp(PatchOp):
+    """Compiled hilbert operation using selected-axis inference."""
+
+    dim: str
+
+    @classmethod
+    def prepare(cls, patch: PatchType, dim: str) -> "HilbertOp":
+        if patch.get_coord(dim).step is None:
+            msg = f"Coordinate {dim} is not evenly sampled as required by hilbert"
+            raise dc.exceptions.CoordError(msg)
+        return super().prepare(patch, dim=dim)
+
+    def kernel(self, data, selected_axis):
+        return {"data": kernels.hilbert_kernel(data, axis=selected_axis)}
+
+
+@dataclass(frozen=True)
+class EnvelopeOp(PatchOp):
+    """Compiled envelope operation using selected-axis inference."""
+
+    dim: str
+
+    @classmethod
+    def prepare(cls, patch: PatchType, dim: str) -> "EnvelopeOp":
+        if patch.get_coord(dim).step is None:
+            msg = f"Coordinate {dim} is not evenly sampled as required by envelope"
+            raise dc.exceptions.CoordError(msg)
+        return super().prepare(patch, dim=dim)
+
+    def kernel(self, data, selected_axis):
+        return {"data": kernels.envelope_kernel(data, axis=selected_axis)}
+
+
+@dataclass(frozen=True)
+class WhitenOp(EagerPatchOp):
+    """Unified eager-backed whiten operation."""
+
+    patch_impl_fn = staticmethod(dc_whiten.func)
 
 
 def get_dim_freq_range_from_kwargs_local(
@@ -46,8 +218,7 @@ def get_dim_freq_range_from_kwargs_local(
             )
         return dim, freq_range
     raise ParameterError(
-        "Whiten kwargs must specify a single patch dimension. "
-        f"You passed {kwargs}."
+        f"Whiten kwargs must specify a single patch dimension. You passed {kwargs}."
     )
 
 
@@ -160,7 +331,9 @@ def whiten_patch(
     water_level: float | None = None,
     **kwargs,
 ) -> PatchType:
-    return dc_whiten.func(patch, smooth_size=smooth_size, water_level=water_level, **kwargs)
+    return dc_whiten.func(
+        patch, smooth_size=smooth_size, water_level=water_level, **kwargs
+    )
 
 
 def prepare_fbe_call(
@@ -185,15 +358,25 @@ def prepare_fbe_call(
     window_samples = coord.get_sample_count(val, samples=samples, enforce_lt_coord=True)
     step = dc.to_float(coord.step)
     sampling_rate = 1 / abs(step)
-    window = taper_window if isinstance(taper_window, np.ndarray) else get_window(taper_window, window_samples, fftbins=False)
+    window = (
+        taper_window
+        if isinstance(taper_window, np.ndarray)
+        else get_window(taper_window, window_samples, fftbins=False)
+    )
     if overlap is not None:
-        overlap = coord[:window_samples].get_sample_count(overlap, samples=samples, enforce_lt_coord=True)
+        overlap = coord[:window_samples].get_sample_count(
+            overlap, samples=samples, enforce_lt_coord=True
+        )
     else:
         overlap = 0
     hop = window_samples - overlap
-    stft = ShortTimeFFT(win=window, hop=hop, fs=sampling_rate, fft_mode="onesided", mfft=window_samples)
+    stft = ShortTimeFFT(
+        win=window, hop=hop, fs=sampling_rate, fft_mode="onesided", mfft=window_samples
+    )
     frame_times = np.asarray(stft.t(len(coord)))
-    frame_starts = np.rint(frame_times * sampling_rate).astype(np.int64) - stft.m_num_mid
+    frame_starts = (
+        np.rint(frame_times * sampling_rate).astype(np.int64) - stft.m_num_mid
+    )
     frequencies = np.asarray(stft.f, dtype=np.float64)
     mask = np.ones(len(frequencies), dtype=bool)
     if fmin is not None:
@@ -215,6 +398,98 @@ def prepare_fbe_call(
         "sampling_rate": sampling_rate,
         "stft_obj": stft,
     }
+
+
+@dataclass(frozen=True)
+class FbeOp(PatchOp):
+    """Compiled fbe operation with custom reconstruction."""
+
+    axis: int
+    window: np.ndarray
+    hop: int
+    frame_starts: np.ndarray
+    frame_times: np.ndarray
+    selected_bins: np.ndarray
+    sample_step: float
+    detrend: bool
+    dim: str
+    window_samples: int
+    sampling_rate: float
+    stft_obj: Any
+    mutates_spec = True
+    requires_materialized_patch_after = True
+    requires_materialized_patch_for_prepare = True
+    compile_category = "compiled_boundary"
+
+    @classmethod
+    def prepare(
+        cls,
+        patch: PatchType,
+        overlap: Any = 0,
+        samples: bool = False,
+        detrend: bool = False,
+        taper_window: str | np.ndarray | tuple = "hann",
+        fmin: float | None = None,
+        fmax: float | None = None,
+        **kwargs,
+    ) -> "FbeOp":
+        _, prepared = prepare_fbe_call(
+            patch,
+            (),
+            {
+                "overlap": overlap,
+                "samples": samples,
+                "detrend": detrend,
+                "taper_window": taper_window,
+                "fmin": fmin,
+                "fmax": fmax,
+                **kwargs,
+            },
+        )
+        return cls(**prepared)
+
+    def kernel(self, data):
+        return {
+            "data": kernels.banded_stft_kernel(
+                data,
+                axis=self.axis,
+                window=self.window,
+                frame_starts=self.frame_starts,
+                selected_bins=self.selected_bins,
+                sample_step=self.sample_step,
+                detrend=self.detrend,
+            )
+        }
+
+    def reconstruct(
+        self,
+        previous_patch: PatchType,
+        spec,
+        state,
+    ) -> PatchType:
+        _ = spec
+        coord = previous_patch.get_coord(self.dim, require_evenly_sampled=True)
+        stft_cm = get_stft_coords_local(
+            previous_patch,
+            self.dim,
+            self.axis,
+            coord,
+            self.stft_obj,
+            self.window,
+        )
+        ft_dim = stft_cm.dims[self.axis]
+        coord_map = {
+            name: value
+            for name, value in stft_cm.get_coord_tuple_map().items()
+            if name != ft_dim
+        }
+        dims = tuple(dim for dim in stft_cm.dims if dim != ft_dim)
+        return dc.Patch(
+            data=np.asarray(state.data),
+            coords=coord_map,
+            dims=dims,
+            attrs=previous_patch.attrs,
+        )
 
 
 def fbe_patch(
@@ -265,7 +540,9 @@ def fbe_patch(
         if name != ft_dim
     }
     dims = tuple(dim for dim in stft_cm.dims if dim != ft_dim)
-    return dc.Patch(data=np.asarray(reduced), coords=coord_map, dims=dims, attrs=patch.attrs)
+    return dc.Patch(
+        data=np.asarray(reduced), coords=coord_map, dims=dims, attrs=patch.attrs
+    )
 
 
 def baseline_fbe_patch(

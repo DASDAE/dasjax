@@ -17,6 +17,7 @@ def _run_operation(patch, name: str, *args, **kwargs):
 
 
 def test_compile_reuses_cached_callable_for_same_pipeline() -> None:
+    """Reuse the compiled callable for repeated compile calls."""
     pipeline = JaxPatchPipeline().scale(2.0).add(1.0)
 
     compiled_1 = pipeline.compile()
@@ -26,6 +27,7 @@ def test_compile_reuses_cached_callable_for_same_pipeline() -> None:
 
 
 def test_compile_reuses_cached_callable_for_equivalent_pipeline_instances() -> None:
+    """Reuse the compiled callable across equivalent pipeline instances."""
     pipeline_1 = JaxPatchPipeline().scale(2.0).add(1.0)
     pipeline_2 = JaxPatchPipeline().scale(2.0).add(1.0)
 
@@ -36,6 +38,7 @@ def test_compile_reuses_cached_callable_for_equivalent_pipeline_instances() -> N
 
 
 def test_compile_separates_distinct_pipeline_definitions() -> None:
+    """Keep distinct pipeline definitions in separate cache entries."""
     pipeline_1 = JaxPatchPipeline().scale(2.0)
     pipeline_2 = JaxPatchPipeline().scale(3.0)
 
@@ -43,6 +46,7 @@ def test_compile_separates_distinct_pipeline_definitions() -> None:
 
 
 def test_compile_separates_assert_no_fallback_flag() -> None:
+    """Separate cache entries when assert_no_fallback changes."""
     pipeline = JaxPatchPipeline().scale(2.0)
 
     compiled_default = pipeline.compile()
@@ -52,6 +56,7 @@ def test_compile_separates_assert_no_fallback_flag() -> None:
 
 
 def test_compile_rejects_device_and_backend_together() -> None:
+    """Reject compile calls that pass both device and backend."""
     pipeline = JaxPatchPipeline().scale(2.0)
 
     with pytest.raises(ValueError, match="either device or backend"):
@@ -59,6 +64,7 @@ def test_compile_rejects_device_and_backend_together() -> None:
 
 
 def test_assert_no_fallback_passes_for_native_pipeline() -> None:
+    """Allow fallback assertions for fully native compiled pipelines."""
     patch = dc.get_example_patch("chirp")
     pipeline = (
         JaxPatchPipeline()
@@ -75,6 +81,7 @@ def test_assert_no_fallback_passes_for_native_pipeline() -> None:
 
 
 def test_assert_no_fallback_rejects_host_callback_pipeline() -> None:
+    """Reject fallback assertions for host-callback-backed pipelines."""
     patch = dc.get_example_patch("chirp")
     pipeline = JaxPatchPipeline().gaussian_filter(**{patch.dims[-1]: 3}, samples=True)
 
@@ -83,6 +90,7 @@ def test_assert_no_fallback_rejects_host_callback_pipeline() -> None:
 
 
 def test_assert_no_fallback_passes_for_fbe_pipeline() -> None:
+    """Allow fallback assertions for pure-JAX FBE pipelines."""
     patch = dc.get_example_patch("chirp")
     pipeline = JaxPatchPipeline().fbe(
         time=64, samples=True, overlap=32, fmin=2.0, fmax=10.0
@@ -92,6 +100,7 @@ def test_assert_no_fallback_passes_for_fbe_pipeline() -> None:
 
 
 def test_cached_pipeline_callable_still_matches_expected_output() -> None:
+    """Preserve eager-equivalent results when serving cached callables."""
     patch = dc.get_example_patch("chirp")
     pipeline = (
         JaxPatchPipeline()
@@ -124,6 +133,7 @@ def test_cached_pipeline_callable_still_matches_expected_output() -> None:
 
 
 def test_compiled_pipeline_with_fbe_matches_eager() -> None:
+    """Match eager behavior for compiled pipelines containing FBE."""
     patch = dc.get_example_patch("chirp")
     pipeline = (
         JaxPatchPipeline()
@@ -145,6 +155,7 @@ def test_compiled_pipeline_with_fbe_matches_eager() -> None:
 
 
 def test_compiled_pipeline_with_fbe_in_middle() -> None:
+    """Match eager behavior when FBE appears mid-pipeline."""
     patch = dc.get_example_patch("chirp")
     pipeline = (
         JaxPatchPipeline()
@@ -170,6 +181,7 @@ def test_compiled_pipeline_with_fbe_in_middle() -> None:
 
 
 def test_compile_accepts_explicit_device() -> None:
+    """Accept explicit device selection during compilation."""
     patch = dc.get_example_patch("chirp")
     pipeline = JaxPatchPipeline().scale(2.0)
 
@@ -180,6 +192,7 @@ def test_compile_accepts_explicit_device() -> None:
 
 
 def test_compile_cache_is_bounded() -> None:
+    """Evict older entries when the compiled cache exceeds its bound."""
     cache = JaxPatchPipeline._compiled_cache
     maxsize = cache.maxsize
 

@@ -30,6 +30,7 @@ def _iter_operation_cases():
 
 @pytest.mark.parametrize("operation_name", list_operations())
 def test_list_operations_matches_registry(operation_name: str) -> None:
+    """Expose every registered operation through list_operations."""
     assert get_operation(operation_name).name == operation_name
 
 
@@ -43,6 +44,7 @@ def test_operation_patch_impl_matches_declared_baseline(
     operation,
     case,
 ) -> None:
+    """Match each eager operation implementation to its declared baseline."""
     patch = case.prepare_patch(example_patch)
     args, kwargs = case.resolve_call(patch)
 
@@ -70,6 +72,7 @@ def test_compiled_pipeline_matches_declared_baseline(
     operation,
     case,
 ) -> None:
+    """Match each compiled pipeline operation to its declared baseline."""
     patch = case.prepare_patch(example_patch)
     args, kwargs = case.resolve_call(patch)
     pipeline = getattr(JaxPatchPipeline(), operation.name)(*args, **kwargs)

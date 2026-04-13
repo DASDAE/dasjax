@@ -86,17 +86,77 @@ def differentiate_kernel(
 ) -> Any:
     """Differentiate an array along one axis."""
     arr = jnp.asarray(data)
-    # Accept either a scalar spacing or a full coordinate vector.
-    spacing = jnp.asarray(dx_or_spacing) if np.ndim(dx_or_spacing) else dx_or_spacing
-    # The current compiled contract only covers DASCore's default path.
-    if step > 1:
-        msg = "Compiled differentiate currently requires step=1."
-        raise NotImplementedError(msg)
     if order != 2:
         msg = "Compiled differentiate currently requires order=2."
         raise NotImplementedError(msg)
-    # `jnp.gradient` handles both scalar and per-sample spacing inputs.
-    return jnp.gradient(arr, spacing, axis=axis, edge_order=2)
+    moved = jnp.moveaxis(arr, axis, 0)
+    if step > 1:
+        out = jnp.zeros_like(moved)
+        for step_index in range(step):
+            sub = moved[step_index::step]
+            spacing = (
+                jnp.asarray(dx_or_spacing)[step_index::step]
+                if np.ndim(dx_or_spacing)
+                else dx_or_spacing * step
+            )
+            out = out.at[step_index::step].set(_differentiate_axis0(sub, spacing))
+        return jnp.moveaxis(out, 0, axis)
+    spacing = jnp.asarray(dx_or_spacing) if np.ndim(dx_or_spacing) else dx_or_spacing
+    return jnp.moveaxis(_differentiate_axis0(moved, spacing), 0, axis)
+
+
+def _differentiate_axis0(data: Any, spacing: float | Any) -> Any:
+    """Differentiate along axis 0 using NumPy edge_order=2 formulas."""
+    arr = jnp.asarray(data)
+    if arr.shape[0] < 3:
+        msg = (
+            "Shape of array too small to calculate a numerical gradient, "
+            "at least (edge_order + 1) elements are required."
+        )
+        raise ValueError(msg)
+    out = jnp.empty_like(arr)
+    if np.ndim(spacing) == 0:
+        dx = jnp.asarray(spacing, dtype=arr.real.dtype)
+        out = out.at[1:-1].set((arr[2:] - arr[:-2]) / (2.0 * dx))
+        out = out.at[0].set((-1.5 * arr[0] + 2.0 * arr[1] - 0.5 * arr[2]) / dx)
+        out = out.at[-1].set((0.5 * arr[-3] - 2.0 * arr[-2] + 1.5 * arr[-1]) / dx)
+        return out
+
+    coord_values = jnp.asarray(spacing, dtype=arr.real.dtype)
+    coord_diffs = (
+        coord_values[1:] - coord_values[:-1]
+        if coord_values.shape[0] == arr.shape[0]
+        else coord_values
+    )
+    dx1 = coord_diffs[:-1]
+    dx2 = coord_diffs[1:]
+    a = -(dx2) / (dx1 * (dx1 + dx2))
+    b = (dx2 - dx1) / (dx1 * dx2)
+    c = dx1 / (dx2 * (dx1 + dx2))
+    reshape = (-1,) + (1,) * (arr.ndim - 1)
+    out = out.at[1:-1].set(
+        a.reshape(reshape) * arr[:-2]
+        + b.reshape(reshape) * arr[1:-1]
+        + c.reshape(reshape) * arr[2:]
+    )
+
+    first_dx1 = coord_diffs[0]
+    first_dx2 = coord_diffs[1]
+    out = out.at[0].set(
+        (-(2.0 * first_dx1 + first_dx2) / (first_dx1 * (first_dx1 + first_dx2)))
+        * arr[0]
+        + ((first_dx1 + first_dx2) / (first_dx1 * first_dx2)) * arr[1]
+        - (first_dx1 / (first_dx2 * (first_dx1 + first_dx2))) * arr[2]
+    )
+
+    last_dx1 = coord_diffs[-2]
+    last_dx2 = coord_diffs[-1]
+    out = out.at[-1].set(
+        (last_dx2 / (last_dx1 * (last_dx1 + last_dx2))) * arr[-3]
+        - ((last_dx2 + last_dx1) / (last_dx1 * last_dx2)) * arr[-2]
+        + ((2.0 * last_dx2 + last_dx1) / (last_dx2 * (last_dx1 + last_dx2))) * arr[-1]
+    )
+    return out
 
 
 def integrate_kernel(

@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from functools import reduce
 from operator import add
 from typing import Any
+from operator import mul, truediv
 
 import dascore as dc
 import numpy as np
@@ -15,16 +17,260 @@ from dascore.proc.taper import taper as dc_taper
 from dascore.proc.taper import taper_range as dc_taper_range
 from dascore.transform.differentiate import differentiate as dc_differentiate
 from dascore.transform.integrate import integrate as dc_integrate
+from dascore.units import get_quantity
 from dascore.units import Quantity
+from dascore.utils.misc import iterate
 from scipy.signal import get_window
 
 from dasjax import kernels
 
 from ..common import get_axis, get_axis_from_dims, update_patch
+from ..patch_ops import MetaDelta, PatchOp, PatchSpec
+
+
+@dataclass(frozen=True)
+class DetrendOp(PatchOp):
+    """Compiled detrend operation using selected-axis inference."""
+
+    dim: str
+    type: str = "linear"
+
+    def kernel(self, data, selected_axis):
+        return {
+            "data": kernels.detrend_kernel(data, axis=selected_axis, type=self.type)
+        }
+
+
+@dataclass(frozen=True)
+class NormalizeOp(PatchOp):
+    """Compiled normalize operation using selected-axis inference."""
+
+    dim: str
+    norm: str = "l2"
+
+    def kernel(self, data, selected_axis):
+        return {
+            "data": kernels.normalize_kernel(data, axis=selected_axis, norm=self.norm)
+        }
+
+
+@dataclass(frozen=True)
+class DifferentiateOp(PatchOp):
+    """Compiled differentiate operation with metadata updates."""
+
+    axes: tuple[int, ...]
+    dxs_or_spacing: tuple[Any, ...]
+    order: int = 2
+    step: int = 1
+    dims: tuple[str, ...] = ()
+    new_attrs: Any = None
+
+    @classmethod
+    def prepare(
+        cls,
+        patch: PatchType,
+        dim: str | tuple[str, ...] | None,
+        order: int = 2,
+        step: int = 1,
+    ) -> "DifferentiateOp":
+        dims = tuple(iterate(dim if dim is not None else patch.dims))
+        dxs_or_spacing = []
+        axes = []
+        for dim_name in dims:
+            coord = patch.get_coord(dim_name, require_sorted=True)
+            val = coord.step if coord.evenly_sampled else coord.data
+            dxs_or_spacing.append(dc.to_float(val))
+            axes.append(patch.get_axis(dim_name))
+        if step > 1 and len(axes) > 1:
+            msg = "Step in patch.differentiate can only be used along one axis."
+            raise ParameterError(msg)
+        new_attrs = patch.attrs.update(
+            data_units=_get_data_units_from_dims_local(patch, dims, truediv)
+        )
+        return cls(
+            axes=tuple(axes),
+            dxs_or_spacing=tuple(dxs_or_spacing),
+            order=order,
+            step=step,
+            dims=dims,
+            new_attrs=new_attrs,
+        )
+
+    def kernel(self, data):
+        out = data
+        for axis, dx_or_spacing in zip(self.axes, self.dxs_or_spacing, strict=True):
+            out = kernels.differentiate_kernel(
+                out,
+                axis=axis,
+                dx_or_spacing=dx_or_spacing,
+                order=self.order,
+                step=self.step,
+            )
+        return {"data": out}
+
+    def meta_delta(self, spec: PatchSpec) -> MetaDelta | None:
+        _ = spec
+        return MetaDelta(attrs=self.new_attrs)
+
+
+@dataclass(frozen=True)
+class IntegrateOp(PatchOp):
+    """Compiled integrate operation with eager fallback for definite integrals."""
+
+    axes: tuple[int, ...]
+    dxs_or_spacing: tuple[Any, ...]
+    definite: bool = False
+    dims: tuple[str, ...] = ()
+    new_attrs: Any = None
+    mutates_spec = True
+    requires_materialized_patch_after = True
+    compile_category = "compiled_boundary"
+
+    @classmethod
+    def prepare(
+        cls,
+        patch: PatchType,
+        dim: tuple[str, ...] | str | None,
+        definite: bool = False,
+    ) -> "IntegrateOp":
+        dims = tuple(iterate(dim if dim is not None else patch.dims))
+        dxs_or_spacing = []
+        axes = []
+        for dim_name in dims:
+            coord = patch.get_coord(dim_name, require_sorted=True)
+            val = coord.step if coord.evenly_sampled else coord.data
+            dxs_or_spacing.append(dc.to_float(val))
+            axes.append(patch.get_axis(dim_name))
+        new_attrs = patch.attrs.update(
+            data_units=_get_data_units_from_dims_local(patch, dims, mul),
+            coords={} if definite else patch.attrs.coords,
+        )
+        return cls(
+            axes=tuple(axes),
+            dxs_or_spacing=tuple(dxs_or_spacing),
+            definite=definite,
+            dims=dims,
+            new_attrs=new_attrs,
+        )
+
+    def kernel(self, data):
+        out = data
+        for axis, dx_or_spacing in zip(self.axes, self.dxs_or_spacing, strict=True):
+            out = kernels.integrate_kernel(
+                out,
+                axis=axis,
+                dx_or_spacing=dx_or_spacing,
+                definite=self.definite,
+            )
+        return {"data": out}
+
+    def meta_delta(self, spec: PatchSpec) -> MetaDelta | None:
+        if self.definite:
+            _ = spec
+            return None
+        return MetaDelta(attrs=self.new_attrs)
+
+    def reconstruct(
+        self,
+        previous_patch: PatchType,
+        spec: PatchSpec,
+        state,
+    ) -> PatchType:
+        if self.definite:
+            return dc_integrate.func(previous_patch, dim=self.dims, definite=True)
+        return super().reconstruct(previous_patch, spec, state)
+
+
+@dataclass(frozen=True)
+class TaperOp(PatchOp):
+    """Compiled taper operation."""
+
+    axis: int
+    weight: np.ndarray
+    requires_materialized_patch_for_prepare = True
+
+    @classmethod
+    def prepare(
+        cls,
+        patch: PatchType,
+        window_type: str = "hann",
+        **kwargs,
+    ) -> "TaperOp":
+        _, prepared = prepare_taper_call(
+            patch,
+            (),
+            {"window_type": window_type, **kwargs},
+        )
+        return cls(axis=prepared["axis"], weight=prepared["weight"])
+
+    def kernel(self, data):
+        return {
+            "data": kernels.apply_1d_weight_kernel(
+                data, axis=self.axis, weight=self.weight
+            )
+        }
+
+
+@dataclass(frozen=True)
+class TaperRangeOp(PatchOp):
+    """Compiled taper_range operation."""
+
+    axis: int
+    weight: np.ndarray
+    requires_materialized_patch_for_prepare = True
+
+    @classmethod
+    def prepare(
+        cls,
+        patch: PatchType,
+        window_type: str = "hann",
+        invert: bool = False,
+        relative: bool = False,
+        samples: bool = False,
+        **kwargs,
+    ) -> "TaperRangeOp":
+        _, prepared = prepare_taper_range_call(
+            patch,
+            (),
+            {
+                "window_type": window_type,
+                "invert": invert,
+                "relative": relative,
+                "samples": samples,
+                **kwargs,
+            },
+        )
+        return cls(axis=prepared["axis"], weight=prepared["weight"])
+
+    def kernel(self, data):
+        return {
+            "data": kernels.apply_1d_weight_kernel(
+                data, axis=self.axis, weight=self.weight
+            )
+        }
 
 
 def window_function(window_type: str, size: int) -> np.ndarray:
     return np.asarray(get_window(window_type, size, fftbins=False), dtype=np.float64)
+
+
+def _get_data_units_from_dims_local(
+    patch: PatchType,
+    dims: tuple[str, ...],
+    operator,
+):
+    """Derive data units for dimension-wise math without eager patch execution."""
+    if (data_units := get_quantity(patch.attrs.data_units)) is None:
+        return None
+    dim_units = None
+    for dim_name in dims:
+        dim_unit = get_quantity(patch.get_coord(dim_name).units)
+        if dim_unit is None:
+            continue
+        dim_units = dim_unit if dim_units is None else dim_unit * dim_units
+    if dim_units is not None:
+        data_units = operator(data_units, dim_units)
+    return data_units
 
 
 def get_taper_slices_local(patch: PatchType, kwargs: dict[str, Any]):
@@ -116,7 +362,9 @@ def get_range_envelope_local(coord, inds, window_type, invert):
     return out
 
 
-def validate_detrend_patch_input(patch: PatchType, dim: str, type: str = "linear") -> None:
+def validate_detrend_patch_input(
+    patch: PatchType, dim: str, type: str = "linear"
+) -> None:
     get_axis(patch, dim)
     detrend_type = kernels.validate_detrend_type(type)
     if detrend_type == "linear" and not kernels.is_finite_array(patch.data):
@@ -143,7 +391,9 @@ def detrend_leaves(
 
 def normalize_patch(patch: PatchType, dim: str, norm: str = "l2") -> PatchType:
     axis = get_axis(patch, dim)
-    return update_patch(patch, kernels.normalize_kernel(patch.data, axis=axis, norm=norm))
+    return update_patch(
+        patch, kernels.normalize_kernel(patch.data, axis=axis, norm=norm)
+    )
 
 
 def normalize_leaves(
@@ -198,7 +448,7 @@ def prepare_taper_call(
         weight[:start_len] = window_function(window_type, 2 * start_len)[:start_len]
     if end_slice.start is not None and end_slice.start < shape[axis]:
         end_len = shape[axis] - end_slice.start
-        weight[end_slice.start:] = window_function(window_type, 2 * end_len)[end_len:]
+        weight[end_slice.start :] = window_function(window_type, 2 * end_len)[end_len:]
     return (), {"axis": axis, "weight": weight}
 
 

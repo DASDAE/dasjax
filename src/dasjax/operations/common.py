@@ -125,9 +125,15 @@ def validate_registry(operations: tuple[OperationSpec, ...]) -> None:
             msg = f"Duplicate jax patch operation {operation.name!r}."
             raise ValueError(msg)
         seen.add(operation.name)
-        if operation.execution_policy.value == "leaf" and operation.leaf_transform is None:
+        if (
+            operation.execution_policy.value == "leaf"
+            and operation.leaf_transform is None
+        ):
             msg = f"Leaf operation {operation.name!r} must define leaf_transform."
             raise ValueError(msg)
-        if operation.execution_policy.value == "patch" and operation.leaf_transform is not None:
+        if (
+            operation.execution_policy.value == "patch"
+            and operation.leaf_transform is not None
+        ):
             msg = f"Patch operation {operation.name!r} must not define leaf_transform."
             raise ValueError(msg)

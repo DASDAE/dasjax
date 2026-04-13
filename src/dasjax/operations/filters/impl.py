@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -9,11 +10,155 @@ from dascore.constants import PatchType
 from dascore.exceptions import ParameterError
 from dascore.units import get_filter_units
 from dascore.utils.misc import check_filter_kwargs
-from dascore.utils.patch import get_dim_axis_value, get_dim_sampling_rate, get_patch_window_size
+from dascore.utils.patch import (
+    get_dim_axis_value,
+    get_dim_sampling_rate,
+    get_patch_window_size,
+)
 
 from dasjax import kernels
 
 from ..common import update_patch
+from ..patch_ops import PatchOp
+
+
+@dataclass(frozen=True)
+class GaussianFilterOp(PatchOp):
+    """Compiled gaussian_filter operation."""
+
+    sigma: tuple[float, ...]
+    axes: tuple[int, ...]
+    mode: str = "reflect"
+    cval: float = 0.0
+    truncate: float = 4.0
+    requires_materialized_patch_for_prepare = True
+
+    @classmethod
+    def prepare(
+        cls,
+        patch: PatchType,
+        samples: bool = False,
+        mode: str = "reflect",
+        cval: float = 0.0,
+        truncate: float = 4.0,
+        **kwargs,
+    ) -> "GaussianFilterOp":
+        _, prepared = prepare_gaussian_call(
+            patch,
+            (),
+            {
+                "samples": samples,
+                "mode": mode,
+                "cval": cval,
+                "truncate": truncate,
+                **kwargs,
+            },
+        )
+        return cls(**prepared)
+
+    def kernel(self, data):
+        return {
+            "data": kernels.gaussian_filter_kernel(
+                data,
+                sigma=self.sigma,
+                axes=self.axes,
+                mode=self.mode,
+                cval=self.cval,
+                truncate=self.truncate,
+            )
+        }
+
+
+@dataclass(frozen=True)
+class HampelFilterOp(PatchOp):
+    """Compiled hampel_filter operation."""
+
+    size: tuple[int, ...]
+    threshold: float
+    approximate: bool = True
+    requires_materialized_patch_for_prepare = True
+
+    @classmethod
+    def prepare(
+        cls,
+        patch: PatchType,
+        *,
+        threshold: float = 10.0,
+        samples: bool = False,
+        approximate: bool = True,
+        **kwargs,
+    ) -> "HampelFilterOp":
+        validate_hampel_filter_patch_input(patch, threshold=threshold)
+        validate_hampel_filter_compiled_input(
+            patch,
+            (),
+            {
+                "threshold": threshold,
+                "samples": samples,
+                "approximate": approximate,
+                **kwargs,
+            },
+        )
+        _, prepared = prepare_hampel_call(
+            patch,
+            (),
+            {
+                "threshold": threshold,
+                "samples": samples,
+                "approximate": approximate,
+                **kwargs,
+            },
+        )
+        return cls(**prepared)
+
+    def kernel(self, data):
+        return {
+            "data": kernels.hampel_filter_kernel(
+                data,
+                size=self.size,
+                threshold=self.threshold,
+                approximate=self.approximate,
+            )
+        }
+
+
+@dataclass(frozen=True)
+class PassFilterOp(PatchOp):
+    """Compiled pass_filter operation."""
+
+    sos: Any
+    zi: Any
+    padlen: int
+    axis: int
+    zerophase: bool = True
+    requires_materialized_patch_for_prepare = True
+
+    @classmethod
+    def prepare(
+        cls,
+        patch: PatchType,
+        corners: int = 4,
+        zerophase: bool = True,
+        **kwargs,
+    ) -> "PassFilterOp":
+        _, prepared = prepare_pass_filter_call(
+            patch,
+            (),
+            {"corners": corners, "zerophase": zerophase, **kwargs},
+        )
+        return cls(**prepared)
+
+    def kernel(self, data):
+        return {
+            "data": kernels.pass_filter_kernel(
+                data,
+                sos=self.sos,
+                zi=self.zi,
+                padlen=self.padlen,
+                axis=self.axis,
+                zerophase=self.zerophase,
+            )
+        }
 
 
 def prepare_gaussian_call(
@@ -34,7 +179,13 @@ def prepare_gaussian_call(
         coord = patch.get_coord(dim)
         sigma.append(float(coord.get_sample_count(value, samples=samples)))
         axes.append(axis)
-    return (), {"sigma": tuple(sigma), "axes": tuple(axes), "mode": mode, "cval": cval, "truncate": truncate}
+    return (), {
+        "sigma": tuple(sigma),
+        "axes": tuple(axes),
+        "mode": mode,
+        "cval": cval,
+        "truncate": truncate,
+    }
 
 
 def gaussian_filter_patch(
@@ -48,7 +199,13 @@ def gaussian_filter_patch(
     _, prepared = prepare_gaussian_call(
         patch,
         (),
-        {"samples": samples, "mode": mode, "cval": cval, "truncate": truncate, **kwargs},
+        {
+            "samples": samples,
+            "mode": mode,
+            "cval": cval,
+            "truncate": truncate,
+            **kwargs,
+        },
     )
     return update_patch(patch, kernels.gaussian_filter_kernel(patch.data, **prepared))
 
@@ -65,7 +222,9 @@ def gaussian_filter_leaves(
     truncate: float = 4.0,
 ) -> tuple[Any, tuple[Any, ...]]:
     _ = dims
-    return kernels.gaussian_filter_kernel(data, sigma=sigma, axes=axes, mode=mode, cval=cval, truncate=truncate), coord_leaves
+    return kernels.gaussian_filter_kernel(
+        data, sigma=sigma, axes=axes, mode=mode, cval=cval, truncate=truncate
+    ), coord_leaves
 
 
 def validate_hampel_filter_patch_input(
@@ -75,7 +234,9 @@ def validate_hampel_filter_patch_input(
 ) -> None:
     _ = patch, kwargs
     if threshold <= 0 or not np.isfinite(threshold):
-        raise ParameterError("hampel_filter threshold must be finite and greater than zero")
+        raise ParameterError(
+            "hampel_filter threshold must be finite and greater than zero"
+        )
 
 
 def validate_hampel_filter_compiled_input(
@@ -85,9 +246,13 @@ def validate_hampel_filter_compiled_input(
 ) -> None:
     validate_hampel_filter_patch_input(patch, **kwargs)
     if not kwargs.get("approximate", True):
-        raise NotImplementedError("Compiled hampel_filter currently requires approximate=True.")
+        raise NotImplementedError(
+            "Compiled hampel_filter currently requires approximate=True."
+        )
     if not kernels.is_finite_array(patch.data):
-        raise NotImplementedError("Compiled hampel_filter currently requires finite input data.")
+        raise NotImplementedError(
+            "Compiled hampel_filter currently requires finite input data."
+        )
 
 
 def fallback_gaussian_filter_reason(
@@ -119,9 +284,15 @@ def guard_compiled_hampel_case(
 ) -> tuple[type[Exception], str] | None:
     _ = args
     if not kwargs.get("approximate", True):
-        return (NotImplementedError, "Compiled hampel_filter currently requires approximate=True.")
+        return (
+            NotImplementedError,
+            "Compiled hampel_filter currently requires approximate=True.",
+        )
     if not kernels.is_finite_array(patch.data):
-        return (NotImplementedError, "Compiled hampel_filter currently requires finite input data.")
+        return (
+            NotImplementedError,
+            "Compiled hampel_filter currently requires finite input data.",
+        )
     return None
 
 
@@ -138,7 +309,11 @@ def prepare_hampel_call(
     size = get_patch_window_size(
         patch, call_kwargs, samples, require_odd=True, warn_above=10, min_samples=3
     )
-    return (), {"size": tuple(int(x) for x in size), "threshold": threshold, "approximate": approximate}
+    return (), {
+        "size": tuple(int(x) for x in size),
+        "threshold": threshold,
+        "approximate": approximate,
+    }
 
 
 def hampel_filter_patch(
@@ -153,11 +328,18 @@ def hampel_filter_patch(
     _, prepared = prepare_hampel_call(
         patch,
         (),
-        {"threshold": threshold, "samples": samples, "approximate": approximate, **kwargs},
+        {
+            "threshold": threshold,
+            "samples": samples,
+            "approximate": approximate,
+            **kwargs,
+        },
     )
     if approximate and kernels.is_finite_array(patch.data):
         return update_patch(patch, kernels.hampel_filter_kernel(patch.data, **prepared))
-    return update_patch(patch, kernels.hampel_filter_callback_kernel(patch.data, **prepared))
+    return update_patch(
+        patch, kernels.hampel_filter_callback_kernel(patch.data, **prepared)
+    )
 
 
 def hampel_filter_leaves(
@@ -170,7 +352,9 @@ def hampel_filter_leaves(
     approximate: bool = True,
 ) -> tuple[Any, tuple[Any, ...]]:
     _ = dims
-    return kernels.hampel_filter_kernel(data, size=size, threshold=threshold, approximate=approximate), coord_leaves
+    return kernels.hampel_filter_kernel(
+        data, size=size, threshold=threshold, approximate=approximate
+    ), coord_leaves
 
 
 def prepare_pass_filter_call(
@@ -226,4 +410,6 @@ def pass_filter_leaves(
     zerophase: bool = True,
 ) -> tuple[Any, tuple[Any, ...]]:
     _ = dims
-    return kernels.pass_filter_kernel(data, sos=sos, zi=zi, padlen=padlen, axis=axis, zerophase=zerophase), coord_leaves
+    return kernels.pass_filter_kernel(
+        data, sos=sos, zi=zi, padlen=padlen, axis=axis, zerophase=zerophase
+    ), coord_leaves

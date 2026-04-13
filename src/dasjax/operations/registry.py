@@ -20,7 +20,9 @@ OPERATIONS: tuple[OperationSpec, ...] = (
 
 validate_registry(OPERATIONS)
 
-_OPERATIONS_BY_NAME: dict[str, OperationSpec] = {operation.name: operation for operation in OPERATIONS}
+_OPERATIONS_BY_NAME: dict[str, OperationSpec] = {
+    operation.name: operation for operation in OPERATIONS
+}
 
 
 def get_operation(name: str) -> OperationSpec:

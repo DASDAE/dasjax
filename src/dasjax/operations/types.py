@@ -9,6 +9,8 @@ from typing import Any
 
 from dascore.constants import PatchType
 
+from .patch_ops import PatchOp
+
 LeafTransform = Callable[..., tuple[Any, tuple[Any, ...]]]
 PatchValidator = Callable[..., None]
 CompiledPatchValidator = Callable[[PatchType, tuple[Any, ...], dict[str, Any]], None]
@@ -64,10 +66,10 @@ class OperationSpec:
     name: str
     execution_policy: ExecutionPolicy
     patch_impl: Callable[..., PatchType]
+    patch_op_cls: type[PatchOp] | None = None
     leaf_transform: LeafTransform | None = None
     prepare_call: CallPreparer | None = None
     validate_patch: PatchValidator | None = None
     validate_compiled_patch: CompiledPatchValidator | None = None
     compiled_fallback_reason: CompiledFallbackReason | None = None
     test_cases: tuple[OperationCase, ...] = field(default_factory=tuple)
-
