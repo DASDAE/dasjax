@@ -3,20 +3,17 @@
 from __future__ import annotations
 
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, fields, is_dataclass
 from typing import Any, ClassVar
 
 import jax
 import numpy as np
 from jax import tree_util
 
-from .operations import ExecutionPolicy, get_operation
-from .operations.patch_ops import patch_to_state_spec
-from .pytree import patch_to_leaves, patch_from_leaves
+from .core import PatchPyTree, get_patch_operation
 
 _COMPILED_CACHE_MAXSIZE = 128
 _SEGMENT_CACHE_MAXSIZE = 128
-_VALIDATION_CACHE_MAXSIZE = 64
 
 
 @dataclass(frozen=True)
@@ -26,6 +23,32 @@ class PipelineStep:
     name: str
     args: tuple[Any, ...]
     kwargs: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class PipelinePlanSegment:
+    """One planned execution segment for a patch pipeline."""
+
+    kind: str
+    operations: tuple[str, ...]
+    fused: bool
+    jitted: bool
+    input_dims: tuple[str, ...] = ()
+    output_dims: tuple[str, ...] = ()
+    reason: str | None = None
+
+
+@dataclass(frozen=True)
+class PipelinePlan:
+    """Diagnostic execution plan for a patch pipeline."""
+
+    segments: tuple[PipelinePlanSegment, ...]
+    uses_core: bool
+
+    @property
+    def fused_kernel_count(self) -> int:
+        """Return the number of JIT-fused execution segments."""
+        return sum(segment.jitted for segment in self.segments)
 
 
 class _BoundedCache:
@@ -98,70 +121,21 @@ def _freeze_value(value: Any) -> Any:
         return tuple(sorted(_freeze_value(item) for item in value))
     try:
         hash(value)
-    except TypeError as exc:
-        msg = f"Unhashable pipeline argument {value!r} cannot be compiled."
-        raise TypeError(msg) from exc
+    except TypeError:
+        return repr(value)
     return value
 
 
-def _build_segments(
-    resolved_steps: tuple[tuple[Any, tuple[Any, ...], dict[str, Any]], ...],
-) -> list[tuple[str, Any]]:
-    """Split steps into compiled segments and eager patch-executed steps.
-
-    Returns a list of tagged tuples:
-      ("patchop", tuple_of_resolved_steps)      — compiled PatchOp segment
-      ("leaf",  tuple_of_resolved_steps)        — compiled legacy leaf segment
-      ("patch", (op, args, kwargs))             — eager patch_impl step
-    """
-    segments: list[tuple[str, Any]] = []
-    patchop_run: list[Any] = []
-    patchop_has_structural = False
-    leaf_run: list[Any] = []
-    for op, args, kwargs in resolved_steps:
-        if op.patch_op_cls is not None:
-            if leaf_run:
-                segments.append(("leaf", tuple(leaf_run)))
-                leaf_run = []
-            if (
-                patchop_run
-                and patchop_has_structural
-                and getattr(
-                    op.patch_op_cls, "requires_materialized_patch_for_prepare", False
-                )
-            ):
-                segments.append(("patchop", tuple(patchop_run)))
-                patchop_run = []
-                patchop_has_structural = False
-            patchop_run.append((op, args, kwargs))
-            patchop_has_structural = patchop_has_structural or getattr(
-                op.patch_op_cls, "mutates_spec", False
-            )
-            if getattr(op.patch_op_cls, "requires_materialized_patch_after", False):
-                segments.append(("patchop", tuple(patchop_run)))
-                patchop_run = []
-                patchop_has_structural = False
-            continue
-        if op.execution_policy is ExecutionPolicy.PATCH:
-            if patchop_run:
-                segments.append(("patchop", tuple(patchop_run)))
-                patchop_run = []
-                patchop_has_structural = False
-            if leaf_run:
-                segments.append(("leaf", tuple(leaf_run)))
-                leaf_run = []
-            segments.append(("patch", (op, args, kwargs)))
-        else:
-            if patchop_run:
-                segments.append(("patchop", tuple(patchop_run)))
-                patchop_run = []
-                patchop_has_structural = False
-            leaf_run.append((op, args, kwargs))
-    if patchop_run:
-        segments.append(("patchop", tuple(patchop_run)))
-    if leaf_run:
-        segments.append(("leaf", tuple(leaf_run)))
-    return segments
+def _operation_key(operation: Any) -> tuple[Any, ...]:
+    """Return a stable cache key for a bound core operation."""
+    if is_dataclass(operation):
+        entries = tuple(
+            (field.name, _freeze_value(getattr(operation, field.name)))
+            for field in fields(operation)
+        )
+    else:
+        entries = tuple((key, _freeze_value(value)) for key, value in vars(operation).items())
+    return type(operation).operation_name(), entries
 
 
 class JaxPatchPipeline:
@@ -181,7 +155,7 @@ class JaxPatchPipeline:
 
     def __getattr__(self, name: str):
         """Record only known JAX patch operations."""
-        get_operation(name)
+        get_patch_operation(name)
 
         def _record(*args: Any, **kwargs: Any) -> "JaxPatchPipeline":
             step = PipelineStep(name=name, args=args, kwargs=dict(kwargs))
@@ -232,74 +206,133 @@ class JaxPatchPipeline:
             coord_sig,
         )
 
-    def _resolve_steps(self) -> tuple[tuple[Any, tuple[Any, ...], dict[str, Any]], ...]:
-        """Resolve operation names into operation specs once."""
+    def _resolve_operations(self) -> tuple[Any, ...]:
+        """Return class-authored operation instances."""
         return tuple(
-            (get_operation(step.name), step.args, step.kwargs) for step in self._steps
+            get_patch_operation(step.name)(*step.args, **step.kwargs)
+            for step in self._steps
         )
 
     @staticmethod
-    def _freeze_resolved_steps(
-        resolved_steps: tuple[tuple[Any, tuple[Any, ...], dict[str, Any]], ...],
-    ) -> tuple[Any, ...]:
-        return tuple(
-            (
-                op.name,
-                _freeze_value(args),
-                _freeze_value(kwargs),
-            )
-            for op, args, kwargs in resolved_steps
-        )
+    def _build_core_runner(operations: tuple[Any, ...]):
+        """Build a class-authored PatchPyTree operation segment."""
 
-    @staticmethod
-    def _compile_leaf_runner(
-        resolved_steps: tuple[tuple[Any, tuple[Any, ...], dict[str, Any]], ...],
-    ):
-        """Compile the leaf-native execution path once per pipeline definition."""
-
-        def _run(data, coord_leaves, dims):
-            for op, args, kwargs in resolved_steps:
-                assert op.leaf_transform is not None
-                data, coord_leaves = op.leaf_transform(
-                    data,
-                    coord_leaves,
-                    *args,
-                    dims=dims,
-                    **kwargs,
-                )
-            return data, coord_leaves
-
-        return jax.jit(_run, static_argnums=2)
-
-    @staticmethod
-    def _compile_patchop_runner(prepared_ops: tuple[Any, ...]):
-        """Compile one unified PatchOp segment."""
-
-        def _run(state):
-            current_state = state
-            for prepared_op in prepared_ops:
-                current_state = prepared_op.apply(current_state)
-            return current_state
+        def _run(patch_tree):
+            current = patch_tree
+            for operation in operations:
+                current = operation.kernel(current)
+            return current
 
         return jax.jit(_run)
 
-    def _get_compiled_fallback_reasons(self, patch) -> tuple[str, ...]:
-        resolved_steps = self._resolve_steps()
-        reasons = []
-        for op, args, kwargs in resolved_steps:
-            if op.compiled_fallback_reason is None:
-                continue
-            reason = op.compiled_fallback_reason(patch, args, kwargs)
-            if reason is not None:
-                reasons.append(f"{op.name}: {reason}")
-        return tuple(reasons)
+    @staticmethod
+    def _plan_core_segments(
+        operations: tuple[Any, ...],
+        boundary: Any,
+    ) -> tuple[tuple[tuple[Any, ...], Any, bool], ...]:
+        """Bind operations and statically advance boundaries for JAX segments."""
+        segments: list[tuple[tuple[Any, ...], Any, bool]] = []
+        start_index = 0
+        while start_index < len(operations):
+            bound_ops, boundary, needs_result_boundary, start_index = (
+                JaxPatchPipeline._plan_core_segment(
+                    operations,
+                    boundary,
+                    start_index,
+                )
+            )
+            segments.append((bound_ops, boundary, needs_result_boundary))
+            if needs_result_boundary:
+                break
+        return tuple(segments)
+
+    @staticmethod
+    def _plan_core_segment(
+        operations: tuple[Any, ...],
+        boundary: Any,
+        start_index: int,
+    ) -> tuple[tuple[Any, ...], Any, bool, int]:
+        """Bind one executable segment, stopping at result-dependent metadata."""
+        segment_ops: list[Any] = []
+        current_boundary = boundary
+        op_index = start_index
+        while op_index < len(operations):
+            operation = operations[op_index]
+            bound_operation = operation.bind(current_boundary)
+            segment_ops.append(bound_operation)
+            if type(bound_operation).overrides("update_boundary"):
+                current_boundary = bound_operation.update_boundary(current_boundary)
+            needs_result_boundary = type(bound_operation).overrides(
+                "update_boundary_from_result"
+            )
+            stops_segment = needs_result_boundary
+            op_index += 1
+            if stops_segment:
+                return (
+                    tuple(segment_ops),
+                    current_boundary,
+                    needs_result_boundary,
+                    op_index,
+                )
+        return tuple(segment_ops), current_boundary, False, op_index
 
     def assert_no_fallback(self, patch) -> None:
-        """Raise if any step would use a host fallback for this patch."""
-        reasons = self._get_compiled_fallback_reasons(patch)
-        if reasons:
-            msg = "Compiled pipeline would use host fallbacks:\n" + "\n".join(reasons)
-            raise AssertionError(msg)
+        """No-op compatibility method; core pipelines have no legacy fallback."""
+        _ = patch
+
+    def plan(self, patch) -> PipelinePlan:
+        """Return a diagnostic execution plan for this pipeline and patch."""
+        return self._plan_core_execution(patch, self._resolve_operations())
+
+    def _plan_core_execution(
+        self,
+        patch,
+        core_operations: tuple[Any, ...],
+    ) -> PipelinePlan:
+        """Plan class-authored core execution without running kernels."""
+        _, boundary = PatchPyTree.from_patch(patch)
+        segments: list[PipelinePlanSegment] = []
+        op_index = 0
+        while op_index < len(core_operations):
+            input_dims = boundary.dims
+            bound_ops, planned_boundary, needs_result_boundary, op_index = (
+                self._plan_core_segment(core_operations, boundary, op_index)
+            )
+            reason = (
+                "requires result-dependent boundary update"
+                if needs_result_boundary
+                else None
+            )
+            segments.append(
+                PipelinePlanSegment(
+                    kind="core",
+                    operations=tuple(type(op).operation_name() for op in bound_ops),
+                    fused=len(bound_ops) > 1,
+                    jitted=True,
+                    input_dims=input_dims,
+                    output_dims=planned_boundary.dims,
+                    reason=reason,
+                )
+            )
+            boundary = planned_boundary
+            if needs_result_boundary:
+                if op_index < len(core_operations):
+                    remaining = core_operations[op_index:]
+                    segments.append(
+                        PipelinePlanSegment(
+                            kind="unplanned",
+                            operations=tuple(
+                                type(op).operation_name() for op in remaining
+                            ),
+                            fused=False,
+                            jitted=False,
+                            input_dims=boundary.dims,
+                            output_dims=(),
+                            reason="requires executing previous segment first",
+                        )
+                    )
+                break
+        return PipelinePlan(segments=tuple(segments), uses_core=True)
 
     def compile(
         self,
@@ -310,9 +343,8 @@ class JaxPatchPipeline:
     ):
         """Compile the recorded steps into a callable `Patch -> Patch`.
 
-        Leaf-native operations are fused into jax.jit-compiled segments.
-        Patch-native operations run eagerly via patch_impl between those
-        segments, so compiled pipelines can mix both execution modes.
+        Class-authored operations are bound against a patch boundary, grouped
+        into JIT segments, and reconstructed through the final boundary.
         """
         target_device = _resolve_target_device(device=device, backend=backend)
         cache_key = self._compile_cache_key(
@@ -324,105 +356,40 @@ class JaxPatchPipeline:
         if cached is not None:
             return cached
 
-        resolved_steps = self._resolve_steps()
-        segments = _build_segments(resolved_steps)
-        # One inner cache dict per leaf segment (None for patch slots).
-        compiled_by_segment: list[_BoundedCache | None] = [
-            _BoundedCache(maxsize=_SEGMENT_CACHE_MAXSIZE)
-            if kind in {"leaf", "patchop"}
-            else None
-            for kind, _ in segments
-        ]
-        validated_signatures = _BoundedCache(maxsize=_VALIDATION_CACHE_MAXSIZE)
-        fallback_checked_signatures = _BoundedCache(maxsize=_VALIDATION_CACHE_MAXSIZE)
+        operations = self._resolve_operations()
+        core_segment_cache = _BoundedCache(maxsize=_SEGMENT_CACHE_MAXSIZE)
 
         def _compiled_patch_fn(patch):
-            patch_signature = self._validation_signature(patch)
-            if (
-                assert_no_fallback
-                and fallback_checked_signatures.get(patch_signature) is None
-            ):
-                self.assert_no_fallback(patch)
-                fallback_checked_signatures.add(patch_signature, True)
-            if validated_signatures.get(patch_signature) is None:
-                for op, args, kwargs in resolved_steps:
-                    if op.validate_patch is not None:
-                        op.validate_patch(patch, *args, **kwargs)
-                    if op.validate_compiled_patch is not None:
-                        op.validate_compiled_patch(patch, args, kwargs)
-                validated_signatures.add(patch_signature, True)
-
-            current_patch = patch
-            for seg_idx, (kind, seg_data) in enumerate(segments):
-                if kind == "patch":
-                    op, args, kwargs = seg_data
-                    current_patch = op.patch_impl(current_patch, *args, **kwargs)
-                elif kind == "patchop":
-                    prepared_ops = tuple(
-                        op.patch_op_cls.prepare(current_patch, *args, **kwargs)
-                        for op, args, kwargs in seg_data
+            patch_tree, boundary = PatchPyTree.from_patch(patch)
+            current_tree = patch_tree
+            current_boundary = boundary
+            op_index = 0
+            while op_index < len(operations):
+                bound_ops, planned_boundary, needs_result_boundary, op_index = (
+                    self._plan_core_segment(
+                        operations,
+                        current_boundary,
+                        op_index,
                     )
-                    prepared_key = tuple(
-                        prepared_op.compile_key() for prepared_op in prepared_ops
+                )
+                segment_key = tuple(_operation_key(bound_operation) for bound_operation in bound_ops)
+                compiled = core_segment_cache.get(segment_key)
+                if compiled is None:
+                    compiled = self._build_core_runner(bound_ops)
+                    core_segment_cache.add(segment_key, compiled)
+                if target_device is not None:
+                    current_tree = tree_util.tree_map(
+                        lambda x: jax.device_put(x, device=target_device),
+                        current_tree,
                     )
-                    seg_cache = compiled_by_segment[seg_idx]
-                    compiled = seg_cache.get(prepared_key)
-                    if compiled is None:
-                        compiled = self._compile_patchop_runner(prepared_ops)
-                        seg_cache.add(prepared_key, compiled)
-                    state, spec = patch_to_state_spec(current_patch)
-                    if target_device is not None:
-                        state = tree_util.tree_map(
-                            lambda x: jax.device_put(x, device=target_device), state
-                        )
-                    out_state = compiled(state)
-                    out_spec = spec
-                    for prepared_op in prepared_ops:
-                        out_spec = out_spec.apply_meta(prepared_op.meta_delta(out_spec))
-                    current_patch = prepared_ops[-1].reconstruct(
-                        current_patch,
-                        out_spec,
-                        out_state,
+                current_tree = compiled(current_tree)
+                current_boundary = planned_boundary
+                if needs_result_boundary:
+                    current_boundary = bound_ops[-1].update_boundary_from_result(
+                        current_tree,
+                        current_boundary,
                     )
-                else:
-                    leaf_steps = seg_data
-                    prepared_steps = tuple(
-                        (op, *op.prepare_call(current_patch, args, kwargs))
-                        if op.prepare_call is not None
-                        else (op, args, kwargs)
-                        for op, args, kwargs in leaf_steps
-                    )
-                    prepared_key = self._freeze_resolved_steps(prepared_steps)
-                    seg_cache = compiled_by_segment[seg_idx]
-                    compiled = seg_cache.get(prepared_key)
-                    if compiled is None:
-                        compiled = self._compile_leaf_runner(prepared_steps)
-                        seg_cache.add(prepared_key, compiled)
-                    data, coord_leaves, aux_data = patch_to_leaves(current_patch)
-                    if target_device is not None:
-                        data = jax.device_put(data, device=target_device)
-                        coord_leaves = tree_util.tree_map(
-                            lambda x: jax.device_put(x, device=target_device),
-                            coord_leaves,
-                        )
-                    out_data, out_coord_leaves = compiled(
-                        data,
-                        coord_leaves,
-                        aux_data["dims"],
-                    )
-                    next_kind = (
-                        segments[seg_idx + 1][0]
-                        if seg_idx + 1 < len(segments)
-                        else None
-                    )
-                    current_patch = patch_from_leaves(
-                        out_data,
-                        out_coord_leaves,
-                        aux_data,
-                        coerce_numpy=next_kind != "leaf",
-                    )
-
-            return current_patch
+            return current_boundary.to_patch(current_tree)
 
         self._compiled_cache.add(cache_key, _compiled_patch_fn)
         return _compiled_patch_fn

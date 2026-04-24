@@ -8,12 +8,13 @@ import numpy as np
 import pytest
 
 from dasjax import JaxPatchPipeline
-from dasjax.operations import get_operation
 
 
-def _run_operation(patch, name: str, *args, **kwargs):
-    """Apply one internal operation through DASCore's pipe helper."""
-    return patch.pipe(get_operation(name).patch_impl, *args, **kwargs)
+def _fbe_baseline(patch):
+    out = patch.stft(time=64, samples=True, overlap=32).abs()
+    ft_dim = next(dim for dim in out.dims if dim.startswith("ft_"))
+    out = out.select(**{ft_dim: (2.0, 10.0)})
+    return out.sum(dim=ft_dim, dim_reduce="squeeze")
 
 
 def test_compile_reuses_cached_callable_for_same_pipeline() -> None:
@@ -80,13 +81,12 @@ def test_assert_no_fallback_passes_for_native_pipeline() -> None:
     pipeline.assert_no_fallback(patch)
 
 
-def test_assert_no_fallback_rejects_host_callback_pipeline() -> None:
-    """Reject fallback assertions for host-callback-backed pipelines."""
+def test_assert_no_fallback_accepts_core_pipeline() -> None:
+    """Core pipelines no longer have legacy fallback branches."""
     patch = dc.get_example_patch("chirp")
     pipeline = JaxPatchPipeline().gaussian_filter(**{patch.dims[-1]: 3}, samples=True)
 
-    with pytest.raises(AssertionError, match="host fallbacks"):
-        pipeline.assert_no_fallback(patch)
+    pipeline.assert_no_fallback(patch)
 
 
 def test_assert_no_fallback_passes_for_fbe_pipeline() -> None:
@@ -114,20 +114,7 @@ def test_cached_pipeline_callable_still_matches_expected_output() -> None:
 
     compiled = pipeline.compile()
     out = compiled(patch)
-    expected = _run_operation(
-        _run_operation(
-            _run_operation(
-                patch,
-                "scale",
-                2.0,
-            ),
-            "add",
-            1.0,
-        ),
-        "detrend",
-        dim=patch.dims[-1],
-        type="constant",
-    )
+    expected = ((patch * 2.0) + 1.0).detrend(dim=patch.dims[-1], type="constant")
 
     assert out.equals(expected)
 
@@ -141,15 +128,7 @@ def test_compiled_pipeline_with_fbe_matches_eager() -> None:
         .fbe(time=64, samples=True, overlap=32, fmin=2.0, fmax=10.0)
     )
     out = pipeline.compile()(patch)
-    expected = _run_operation(
-        _run_operation(patch, "scale", 2.0),
-        "fbe",
-        time=64,
-        samples=True,
-        overlap=32,
-        fmin=2.0,
-        fmax=10.0,
-    )
+    expected = _fbe_baseline(patch * 2.0)
     assert np.allclose(out.data, expected.data, equal_nan=True, rtol=1e-5, atol=1e-6)
     assert out.coords == expected.coords
 
@@ -164,18 +143,7 @@ def test_compiled_pipeline_with_fbe_in_middle() -> None:
         .abs()
     )
     out = pipeline.compile()(patch)
-    expected = _run_operation(
-        _run_operation(
-            _run_operation(patch, "scale", 2.0),
-            "fbe",
-            time=64,
-            samples=True,
-            overlap=32,
-            fmin=2.0,
-            fmax=10.0,
-        ),
-        "abs",
-    )
+    expected = _fbe_baseline(patch * 2.0).abs()
     assert np.allclose(out.data, expected.data, equal_nan=True, rtol=1e-5, atol=1e-6)
     assert out.coords == expected.coords
 
@@ -188,7 +156,7 @@ def test_compile_accepts_explicit_device() -> None:
     compiled = pipeline.compile(device=jax.devices()[0])
     out = compiled(patch)
 
-    assert out.equals(_run_operation(patch, "scale", 2.0))
+    assert out.equals(patch * 2.0)
 
 
 def test_compile_cache_is_bounded() -> None:

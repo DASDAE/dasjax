@@ -38,18 +38,18 @@ print(out.shape)
 
 ## Development
 
-### Three-Tier Architecture
+### Architecture
 
-`dasjax` is organized as a small three-tier stack:
+`dasjax` is organized around one core operation model:
 
 1. Pipeline layer:
-   `src/dasjax/pipeline.py` records operation chains and compiles reusable patch transforms. This is the main user-facing API.
+   `src/dasjax/pipeline.py` records operation chains, plans metadata boundaries, and compiles reusable patch transforms. This is the main user-facing API.
 2. Operation layer:
-   `src/dasjax/operations/` defines the operation registry, execution policies, validation rules, eager patch implementations, and compiled leaf transforms.
+   `src/dasjax/core.py` and `src/dasjax/core_ops.py` define `PatchOperation`, `PatchBoundary`, `PatchPyTree`, and the registered operation classes.
 3. Kernel layer:
    `src/dasjax/kernels/` contains the array-level JAX and callback-backed kernels that actually do the numerical work, grouped by domain (`basic`, `signal`, `filters`, `spectral`).
 
-This split keeps the package easier to extend: add or update numerical behavior in the kernel layer, describe how it plugs into compiled execution in the operation layer, and expose it through the pipeline layer.
+Operation authors use `bind(boundary)` for Python-side metadata planning, `kernel(patch_tree)` for JAX-side data transforms, and `update_boundary(boundary)` for static metadata changes.
 
 
 ### Roadmap
@@ -90,10 +90,10 @@ These need either more work in the kernel layer or are shape-changing (segmented
 
 ## Development Guidelines
 
-- Add new JAX patch methods by defining an array kernel in `src/dasjax/kernels/` and one operation spec in the relevant `src/dasjax/operations/` family module.
-- The operation spec is the single source of truth for pipeline support, validation, and shared parity test cases.
+- Add new JAX patch methods by defining an array kernel in `src/dasjax/kernels/` and one `PatchOperation` subclass in `src/dasjax/core_ops.py`.
+- The `PatchOperation` subclass is the single source of truth for pipeline support, metadata binding, and boundary updates.
 - Every new patch method must be tested against a DASCore baseline across the shared mixed-patch fixture in `tests/conftest.py`.
 - Prefer comparing internal operation behavior and compiled pipeline outputs against the closest native DASCore method or operator. If DASCore has no direct method, compare against an equivalent `Patch.update(...)` baseline.
 - Method-equivalence assertions should check data closeness with `equal_nan=True` when needed and should also verify coordinate preservation.
-- Compiled pipeline parity should come from the same declared operation cases rather than a separate hand-maintained test matrix.
+- Compiled pipeline parity should compare `JaxPatchPipeline` output against DASCore baselines for each registered operation.
 - Install Git hooks locally with `prek install`.
