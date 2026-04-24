@@ -17,12 +17,14 @@ pytest benchmarks/test_pipeline_benchmarks.py
 
 ## Benchmark Structure
 
-The first benchmark suite focuses on side-by-side comparisons between:
+The benchmark suite focuses on side-by-side comparisons between:
 
 - compiled `dasjax` pipelines
 - equivalent DASCore-native operation chains
+- individual compiled `dasjax` operations
+- equivalent individual DASCore operations
 
-Each comparison is exposed as a separate benchmark test per engine so CodSpeed output is easy to read.
+Each comparison is exposed as a separate benchmark test per engine so CodSpeed output is easy to read. Pipeline benchmark groups use names like `scale_fbe`; individual operation benchmark groups use names like `operation_fbe`.
 
 To export benchmark results for ratio comparisons, use:
 

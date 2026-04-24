@@ -18,6 +18,7 @@ from .core import (
     iter_patch_operations,
     list_patch_operations,
 )
+from . import operations as operations
 from . import core_ops as core_ops
 from .pipeline import JaxPatchPipeline
 

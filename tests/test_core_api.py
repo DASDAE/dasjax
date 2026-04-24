@@ -3,14 +3,23 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from operator import mul
+from types import SimpleNamespace
 from typing import ClassVar
 
 import dascore as dc
 import jax
 import numpy as np
+import pytest
 
 from dasjax import JaxPatchPipeline, PatchBoundary, PatchOperation, PatchPyTree
-from dasjax.core import get_patch_operation, list_patch_operations
+from dasjax.core import (
+    _coord_values_match,
+    _encode_leaf,
+    get_patch_operation,
+    list_patch_operations,
+)
+from dasjax.operations.common import get_data_units_from_dims
 
 
 @dataclass(frozen=True)
@@ -108,6 +117,19 @@ def test_patch_pytree_restores_datetime_coords() -> None:
     assert np.array_equal(out.get_coord("time").values, patch.get_coord("time").values)
 
 
+def test_coord_values_match_rejects_shape_mismatch() -> None:
+    """Cover coordinate equality shape-mismatch rejection."""
+    assert not _coord_values_match(np.arange(2), np.arange(3))
+
+
+def test_encode_leaf_rejects_unsupported_dtype() -> None:
+    """Reject coordinate dtypes that cannot be represented in JAX patches."""
+    with pytest.raises(TypeError, match="Unsupported coordinate dtype"):
+        _encode_leaf(np.asarray(["x"], dtype=object))
+    with pytest.raises(TypeError, match="Unsupported coordinate dtype"):
+        _encode_leaf(np.asarray([1], dtype=np.uint32))
+
+
 def test_patch_boundary_swaps_dynamic_coord_values() -> None:
     """Rebuild coords by replacing values while preserving coord metadata."""
     patch = dc.get_example_patch()
@@ -137,6 +159,26 @@ def test_patch_boundary_exposes_author_metadata_helpers() -> None:
     assert boundary.coord_index("time") == boundary.coord_names.index("time")
 
 
+def test_patch_pytree_helpers_and_base_hooks() -> None:
+    """Cover direct tree helpers and default operation hook behavior."""
+    patch = dc.get_example_patch()
+    patch_tree, boundary = PatchPyTree.from_patch(patch)
+
+    with pytest.raises(RuntimeError, match="requires PatchBoundary"):
+        patch_tree.to_patch(coerce_numpy=False)
+
+    assert np.array_equal(patch_tree.coord(0), patch_tree.coord_values[0])
+    replaced = patch_tree.replace_coord(0, np.asarray(patch_tree.coord_values[0]) + 1)
+    assert np.array_equal(replaced[0], np.asarray(patch_tree.coord_values[0]) + 1)
+    assert boundary.with_metadata(attrs=patch.attrs).attrs == patch.attrs
+
+    op = PatchOperation()
+    assert op.bind(boundary) is op
+    assert op.kernel(patch_tree) is patch_tree
+    assert op.update_boundary(boundary) is boundary
+    assert op.update_boundary_from_result(patch_tree, boundary) is boundary
+
+
 def test_patch_pytree_new_updates_data_and_ordered_coord_values() -> None:
     """Mirror Patch.new-style immutable updates for JAX patch trees."""
     patch = dc.get_example_patch()
@@ -159,6 +201,44 @@ def test_operation_subclasses_register_pipeline_names() -> None:
     """Register class-authored operations by snake-case class name."""
     assert "scale" in list_patch_operations()
     assert get_patch_operation("scale").operation_name() == "scale"
+
+
+def test_operation_registration_validation() -> None:
+    """Cover duplicate registration, suffix naming, and unknown lookups."""
+
+    @dataclass(frozen=True)
+    class ExampleOperation(PatchOperation):
+        register = False
+
+    assert ExampleOperation.operation_name() == "example"
+
+    with pytest.raises(ValueError, match="Duplicate"):
+
+        class Scale(PatchOperation):
+            pass
+
+    with pytest.raises(AttributeError, match="Unknown"):
+        get_patch_operation("does_not_exist")
+
+
+def test_unit_helper_handles_missing_and_multiple_units() -> None:
+    """Cover unit helper paths for no units, skipped dims, and multiplication."""
+    patch = dc.get_example_patch()
+    _, boundary = PatchPyTree.from_patch(patch)
+    attrs = boundary.attrs.update(data_units="m")
+    coords = boundary.coords.set_units(time="s")
+    unit_boundary = boundary.new(attrs=attrs, coords=coords)
+
+    assert get_data_units_from_dims(boundary, ("time",), mul) is None
+    assert (
+        get_data_units_from_dims(unit_boundary, ("time", "distance"), mul) is not None
+    )
+
+    fake_boundary = SimpleNamespace(
+        attrs=SimpleNamespace(data_units="m"),
+        coord=lambda name: SimpleNamespace(units=None if name == "x" else "s"),
+    )
+    assert get_data_units_from_dims(fake_boundary, ("x", "time"), mul) is not None
 
 
 def test_compiled_pipeline_uses_class_authored_basic_operations() -> None:
@@ -230,9 +310,7 @@ def test_core_planner_restarts_after_result_boundary_updates() -> None:
         JaxPatchPipeline._plan_core_segment((op,), boundary, 0)
     )
     out_tree = bound_ops[0].kernel(patch_tree)
-    out_boundary = bound_ops[0].update_boundary_from_result(
-        out_tree, planned_boundary
-    )
+    out_boundary = bound_ops[0].update_boundary_from_result(out_tree, planned_boundary)
     out = out_boundary.to_patch(out_tree)
 
     assert out.dims == ("distance", "ft_time")

@@ -30,11 +30,18 @@ test = [
   "pytest",
   "pytest-benchmark",
   "pytest-codspeed",
+  "bottleneck",
 ]
 dev = [
   "prek>=0.3.8",
   "ruff>=0.14.5",
 ]
+docs = [
+  "zensical",
+]
+
+[project.scripts]
+dasjax-benchmark = "dasjax.benchmark_cli:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

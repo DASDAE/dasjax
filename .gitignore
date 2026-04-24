@@ -74,6 +74,9 @@ target/
 
 # docs
 docs/api/*
+docs/benchmarks/*
+site/
+.benchmarks/
 _autosummary
 .quarto/
 docs/site_libs

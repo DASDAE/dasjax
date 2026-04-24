@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
+from collections.abc import Callable
 from collections import OrderedDict
 from dataclasses import dataclass, fields, is_dataclass
 from typing import Any, ClassVar
 
+import dascore as dc
 import jax
 import numpy as np
 from jax import tree_util
@@ -85,11 +88,12 @@ def _freeze_device(device: jax.Device | None) -> Any:
     )
 
 
-def _resolve_target_device(
+def _resolve_compile_target(
     *,
     device: jax.Device | None = None,
     backend: str | None = None,
 ) -> jax.Device | None:
+    """Return the device on which compiled inputs should be placed."""
     if device is not None and backend is not None:
         msg = "Pass either device or backend to compile(), not both."
         raise ValueError(msg)
@@ -106,12 +110,13 @@ def _resolve_target_device(
 
 def _freeze_value(value: Any) -> Any:
     """Convert nested values into hashable cache-key components."""
-    if isinstance(value, np.ndarray):
+    if isinstance(value, np.ndarray | jax.Array):
+        contiguous = np.ascontiguousarray(np.asarray(value))
         return (
             "ndarray",
-            str(value.dtype),
-            value.shape,
-            tuple(np.asarray(value).reshape(-1).tolist()),
+            contiguous.dtype.str,
+            contiguous.shape,
+            hashlib.blake2b(contiguous.tobytes(), digest_size=16).hexdigest(),
         )
     if isinstance(value, dict):
         return tuple((key, _freeze_value(val)) for key, val in sorted(value.items()))
@@ -134,8 +139,35 @@ def _operation_key(operation: Any) -> tuple[Any, ...]:
             for field in fields(operation)
         )
     else:
-        entries = tuple((key, _freeze_value(value)) for key, value in vars(operation).items())
+        entries = tuple(
+            (key, _freeze_value(value)) for key, value in vars(operation).items()
+        )
     return type(operation).operation_name(), entries
+
+
+def _boundary_cache_key(
+    patch_tree: PatchPyTree,
+    boundary: Any,
+) -> tuple[Any, ...]:
+    """Return a cache key for static metadata used during operation binding."""
+    return (
+        patch_tree.dims,
+        tuple(
+            (
+                name,
+                _freeze_value(value),
+                int(np.asarray(dtype_code).item()),
+                repr(boundary.coord(name).units),
+            )
+            for name, value, dtype_code in zip(
+                boundary.coord_names,
+                patch_tree.coord_values,
+                patch_tree.coord_dtype_codes,
+                strict=True,
+            )
+        ),
+        repr(boundary.attrs),
+    )
 
 
 class JaxPatchPipeline:
@@ -168,9 +200,9 @@ class JaxPatchPipeline:
         *,
         device: jax.Device | None = None,
         backend: str | None = None,
-        assert_no_fallback: bool = False,
     ) -> tuple[Any, ...]:
         """Return a stable cache key for equivalent pipeline definitions."""
+        _ = backend
         return (
             tuple(
                 (
@@ -181,29 +213,6 @@ class JaxPatchPipeline:
                 for step in self._steps
             ),
             _freeze_device(device),
-            backend,
-            assert_no_fallback,
-        )
-
-    @staticmethod
-    def _validation_signature(patch) -> tuple[Any, ...]:
-        data = np.asarray(patch.data)
-        coord_sig = tuple(
-            (
-                name,
-                tuple(patch.coords.dim_map[name]),
-                np.asarray(coord.values).dtype.str,
-                len(coord),
-                getattr(coord, "step", None),
-            )
-            for name, coord in patch.coords.coord_map.items()
-        )
-        return (
-            tuple(patch.dims),
-            tuple(patch.shape),
-            data.dtype.str,
-            bool(np.isfinite(data).all()),
-            coord_sig,
         )
 
     def _resolve_operations(self) -> tuple[Any, ...]:
@@ -276,11 +285,7 @@ class JaxPatchPipeline:
                 )
         return tuple(segment_ops), current_boundary, False, op_index
 
-    def assert_no_fallback(self, patch) -> None:
-        """No-op compatibility method; core pipelines have no legacy fallback."""
-        _ = patch
-
-    def plan(self, patch) -> PipelinePlan:
+    def plan(self, patch: dc.Patch) -> PipelinePlan:
         """Return a diagnostic execution plan for this pipeline and patch."""
         return self._plan_core_execution(patch, self._resolve_operations())
 
@@ -339,49 +344,82 @@ class JaxPatchPipeline:
         *,
         device: jax.Device | None = None,
         backend: str | None = None,
-        assert_no_fallback: bool = False,
-    ):
-        """Compile the recorded steps into a callable `Patch -> Patch`.
+    ) -> Callable[[dc.Patch], dc.Patch]:
+        """Build a reusable callable `Patch -> Patch` from recorded steps.
 
         Class-authored operations are bound against a patch boundary, grouped
-        into JIT segments, and reconstructed through the final boundary.
+        into JIT segments, and reconstructed through the final boundary. Binding
+        and segment JIT creation are lazy: they happen on the first compatible
+        patch call, then reuse cached segment runners.
+
+        Parameters
+        ----------
+        device
+            Exact JAX device on which patch-tree inputs are placed before
+            running JIT segments. Mutually exclusive with ``backend``.
+        backend
+            JAX backend name, such as ``"cpu"`` or ``"gpu"``. The first local
+            device for the backend is selected as the input placement target.
         """
-        target_device = _resolve_target_device(device=device, backend=backend)
+        target_device = _resolve_compile_target(
+            device=device,
+            backend=backend,
+        )
+        operations = self._resolve_operations()
         cache_key = self._compile_cache_key(
             device=target_device,
-            backend=backend,
-            assert_no_fallback=assert_no_fallback,
         )
         cached = self._compiled_cache.get(cache_key)
         if cached is not None:
             return cached
 
-        operations = self._resolve_operations()
         core_segment_cache = _BoundedCache(maxsize=_SEGMENT_CACHE_MAXSIZE)
+        plan_cache = _BoundedCache(maxsize=_SEGMENT_CACHE_MAXSIZE)
 
         def _compiled_patch_fn(patch):
             patch_tree, boundary = PatchPyTree.from_patch(patch)
             current_tree = patch_tree
+            if target_device is not None:
+                current_tree = tree_util.tree_map(
+                    lambda x: jax.device_put(x, device=target_device),
+                    current_tree,
+                )
             current_boundary = boundary
             op_index = 0
             while op_index < len(operations):
-                bound_ops, planned_boundary, needs_result_boundary, op_index = (
-                    self._plan_core_segment(
-                        operations,
-                        current_boundary,
-                        op_index,
+                boundary_key = _boundary_cache_key(current_tree, current_boundary)
+                plan_key = (op_index, boundary_key)
+                planned = plan_cache.get(plan_key)
+                if planned is None:
+                    bound_ops, planned_boundary, needs_result_boundary, next_index = (
+                        self._plan_core_segment(
+                            operations,
+                            current_boundary,
+                            op_index,
+                        )
                     )
-                )
-                segment_key = tuple(_operation_key(bound_operation) for bound_operation in bound_ops)
+                    segment_key = tuple(
+                        _operation_key(bound_operation) for bound_operation in bound_ops
+                    )
+                    planned = (
+                        bound_ops,
+                        planned_boundary,
+                        needs_result_boundary,
+                        next_index,
+                        segment_key,
+                    )
+                    plan_cache.add(plan_key, planned)
+                (
+                    bound_ops,
+                    planned_boundary,
+                    needs_result_boundary,
+                    op_index,
+                    segment_key,
+                ) = planned
                 compiled = core_segment_cache.get(segment_key)
                 if compiled is None:
                     compiled = self._build_core_runner(bound_ops)
                     core_segment_cache.add(segment_key, compiled)
-                if target_device is not None:
-                    current_tree = tree_util.tree_map(
-                        lambda x: jax.device_put(x, device=target_device),
-                        current_tree,
-                    )
                 current_tree = compiled(current_tree)
                 current_boundary = planned_boundary
                 if needs_result_boundary:

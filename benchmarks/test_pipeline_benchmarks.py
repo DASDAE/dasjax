@@ -82,6 +82,73 @@ def dascore_scale_add_detrend_normalize(example_patch) -> Callable[[], object]:
 
 
 @pytest.fixture(scope="module")
+def dasjax_detrend(example_patch) -> Callable[[], object]:
+    """Return a warmed compiled dasjax detrend operation."""
+    compiled = JaxPatchPipeline().detrend(dim="time", type="constant").compile()
+    compiled(example_patch)
+    return lambda: compiled(example_patch)
+
+
+@pytest.fixture(scope="module")
+def dascore_detrend(example_patch) -> Callable[[], object]:
+    """Return the equivalent DASCore detrend operation."""
+    return lambda: example_patch.detrend(dim="time", type="constant")
+
+
+@pytest.fixture(scope="module")
+def dasjax_normalize(example_patch) -> Callable[[], object]:
+    """Return a warmed compiled dasjax normalize operation."""
+    compiled = JaxPatchPipeline().normalize(dim="time").compile()
+    compiled(example_patch)
+    return lambda: compiled(example_patch)
+
+
+@pytest.fixture(scope="module")
+def dascore_normalize(example_patch) -> Callable[[], object]:
+    """Return the equivalent DASCore normalize operation."""
+    return lambda: example_patch.normalize(dim="time")
+
+
+@pytest.fixture(scope="module")
+def dasjax_pass_filter(example_patch) -> Callable[[], object]:
+    """Return a warmed compiled dasjax pass_filter operation."""
+    compiled = JaxPatchPipeline().pass_filter(time=(2.0, 10.0)).compile()
+    compiled(example_patch)
+    return lambda: compiled(example_patch)
+
+
+@pytest.fixture(scope="module")
+def dascore_pass_filter(example_patch) -> Callable[[], object]:
+    """Return the equivalent DASCore pass_filter operation."""
+    return lambda: example_patch.pass_filter(time=(2.0, 10.0))
+
+
+@pytest.fixture(scope="module")
+def dasjax_fbe(example_patch) -> Callable[[], object]:
+    """Return a warmed compiled dasjax fbe operation."""
+    compiled = (
+        JaxPatchPipeline()
+        .fbe(time=64, samples=True, overlap=32, fmin=2.0, fmax=10.0)
+        .compile()
+    )
+    compiled(example_patch)
+    return lambda: compiled(example_patch)
+
+
+@pytest.fixture(scope="module")
+def dascore_fbe(example_patch) -> Callable[[], object]:
+    """Return the equivalent DASCore fbe baseline operation."""
+    return lambda: _run_dascore_fbe(
+        example_patch,
+        time=64,
+        overlap=32,
+        samples=True,
+        fmin=2.0,
+        fmax=10.0,
+    )
+
+
+@pytest.fixture(scope="module")
 def dasjax_scale_pass_filter_abs(example_patch) -> Callable[[], object]:
     """Return a warmed compiled dasjax filtering pipeline."""
     pipeline = JaxPatchPipeline().scale(2.0).pass_filter(time=(2.0, 10.0)).abs()
@@ -203,3 +270,53 @@ class TestCompiledPipelineBenchmarks:
     ) -> None:
         """Benchmark DASCore fbe+normalize chain execution."""
         benchmark(dascore_scale_fbe_normalize)
+
+
+class TestIndividualOperationBenchmarks:
+    """Benchmarks for individual dasjax operations and DASCore baselines."""
+
+    @pytest.mark.benchmark(group="operation_detrend")
+    def test_dasjax_compiled_operation_detrend(self, benchmark, dasjax_detrend) -> None:
+        """Benchmark warmed compiled dasjax detrend execution."""
+        benchmark(dasjax_detrend)
+
+    @pytest.mark.benchmark(group="operation_detrend")
+    def test_dascore_operation_detrend(self, benchmark, dascore_detrend) -> None:
+        """Benchmark DASCore detrend execution."""
+        benchmark(dascore_detrend)
+
+    @pytest.mark.benchmark(group="operation_normalize")
+    def test_dasjax_compiled_operation_normalize(
+        self, benchmark, dasjax_normalize
+    ) -> None:
+        """Benchmark warmed compiled dasjax normalize execution."""
+        benchmark(dasjax_normalize)
+
+    @pytest.mark.benchmark(group="operation_normalize")
+    def test_dascore_operation_normalize(self, benchmark, dascore_normalize) -> None:
+        """Benchmark DASCore normalize execution."""
+        benchmark(dascore_normalize)
+
+    @pytest.mark.benchmark(group="operation_pass_filter")
+    def test_dasjax_compiled_operation_pass_filter(
+        self, benchmark, dasjax_pass_filter
+    ) -> None:
+        """Benchmark warmed compiled dasjax pass_filter execution."""
+        benchmark(dasjax_pass_filter)
+
+    @pytest.mark.benchmark(group="operation_pass_filter")
+    def test_dascore_operation_pass_filter(
+        self, benchmark, dascore_pass_filter
+    ) -> None:
+        """Benchmark DASCore pass_filter execution."""
+        benchmark(dascore_pass_filter)
+
+    @pytest.mark.benchmark(group="operation_fbe")
+    def test_dasjax_compiled_operation_fbe(self, benchmark, dasjax_fbe) -> None:
+        """Benchmark warmed compiled dasjax fbe execution."""
+        benchmark(dasjax_fbe)
+
+    @pytest.mark.benchmark(group="operation_fbe")
+    def test_dascore_operation_fbe(self, benchmark, dascore_fbe) -> None:
+        """Benchmark DASCore fbe-equivalent execution."""
+        benchmark(dascore_fbe)

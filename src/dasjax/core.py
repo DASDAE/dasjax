@@ -11,10 +11,6 @@ import dascore as dc
 import jax
 import numpy as np
 
-from . import kernels
-
-SUPPORTED_DTYPES = (np.bool_, np.integer, np.floating, np.complexfloating)
-TIME_DTYPES = (np.datetime64, np.timedelta64)
 _DTYPE_TO_CODE = {
     np.dtype("bool").str: 1,
     np.dtype("int32").str: 2,
@@ -27,6 +23,10 @@ _DTYPE_TO_CODE = {
     np.dtype("timedelta64[ns]").str: 9,
 }
 _CODE_TO_DTYPE = {value: np.dtype(key) for key, value in _DTYPE_TO_CODE.items()}
+TIME_DTYPES = (np.dtype("datetime64[ns]"), np.dtype("timedelta64[ns]"))
+SUPPORTED_DTYPES = tuple(
+    np.dtype(key) for key in _DTYPE_TO_CODE if np.dtype(key) not in TIME_DTYPES
+)
 _PatchTreeChildren = tuple[Any, tuple[Any, ...], tuple[Any, ...], tuple[Any, ...]]
 
 
@@ -36,12 +36,16 @@ def _camel_to_snake(name: str) -> str:
     return re.sub("([a-z0-9])([A-Z])", r"\1_\2", name).lower()
 
 
-def _matches_dtype(dtype: np.dtype, candidates: tuple[type[Any], ...]) -> bool:
-    return any(np.issubdtype(dtype, candidate) for candidate in candidates)
+def _matches_dtype(dtype: np.dtype, candidates: tuple[np.dtype, ...]) -> bool:
+    return any(np.dtype(dtype) == candidate for candidate in candidates)
 
 
 def _encode_leaf(array: Any) -> tuple[Any, np.ndarray]:
     arr = np.asarray(array)
+    if np.issubdtype(arr.dtype, np.datetime64):
+        arr = arr.astype("datetime64[ns]")
+    elif np.issubdtype(arr.dtype, np.timedelta64):
+        arr = arr.astype("timedelta64[ns]")
     dtype_code = _DTYPE_TO_CODE.get(arr.dtype.str)
     if dtype_code is None:
         msg = f"Unsupported coordinate dtype for JAX patch conversion: {arr.dtype}"
@@ -50,8 +54,6 @@ def _encode_leaf(array: Any) -> tuple[Any, np.ndarray]:
         return arr, np.asarray(dtype_code, dtype=np.int32)
     if _matches_dtype(arr.dtype, TIME_DTYPES):
         return arr.view(np.int64), np.asarray(dtype_code, dtype=np.int32)
-    msg = f"Unsupported coordinate dtype for JAX patch conversion: {arr.dtype}"
-    raise TypeError(msg)
 
 
 def _decode_leaf(array: Any, dtype_code: Any) -> np.ndarray:
@@ -60,6 +62,23 @@ def _decode_leaf(array: Any, dtype_code: Any) -> np.ndarray:
     if _matches_dtype(dtype, TIME_DTYPES):
         return out.astype(np.int64, copy=False).view(dtype)
     return out.astype(dtype, copy=False)
+
+
+def _coord_values_match(left: Any, right: Any) -> bool:
+    """Return True when decoded coord values match existing coord values."""
+    left_arr = np.asarray(left)
+    right_arr = np.asarray(right)
+    if left_arr.shape != right_arr.shape:
+        return False
+    if np.issubdtype(left_arr.dtype, np.datetime64):
+        left_i = left_arr.astype("datetime64[ns]", copy=False).view(np.int64)
+        right_i = right_arr.astype("datetime64[ns]", copy=False).view(np.int64)
+        return bool(np.array_equal(left_i, right_i))
+    if np.issubdtype(left_arr.dtype, np.timedelta64):
+        left_i = left_arr.astype("timedelta64[ns]", copy=False).view(np.int64)
+        right_i = right_arr.astype("timedelta64[ns]", copy=False).view(np.int64)
+        return bool(np.array_equal(left_i, right_i))
+    return bool(np.array_equal(left_arr, right_arr))
 
 
 @dataclass(frozen=True)
@@ -111,8 +130,11 @@ class PatchBoundary:
         for name, coord in self.coords.coord_map.items():
             out_coord = coord
             if name in coord_values:
-                out_coord = coord.update_data(data=coord_values[name])
-                if coord.units is not None:
+                if _coord_values_match(coord_values[name], coord.values):
+                    out_coord = coord
+                else:
+                    out_coord = coord.update_data(data=coord_values[name])
+                if out_coord is not coord and coord.units is not None:
                     out_coord = out_coord.set_units(coord.units)
             dims = tuple(self.coords.dim_map[name])
             coords[name] = (
@@ -327,86 +349,3 @@ def iter_patch_operations() -> Iterator[type[PatchOperation]]:
 def list_patch_operations() -> tuple[str, ...]:
     """List class-authored operation names in registration order."""
     return tuple(PatchOperation._registry)
-
-
-@dataclass(frozen=True)
-class Identity(PatchOperation):
-    """Return a patch unchanged."""
-
-    def kernel(self, patch_tree: PatchPyTree) -> PatchPyTree:
-        return patch_tree.new(data=kernels.identity_kernel(patch_tree.data))
-
-
-@dataclass(frozen=True)
-class Scale(PatchOperation):
-    """Scale patch data by a constant factor."""
-
-    factor: float
-
-    def kernel(self, patch_tree: PatchPyTree) -> PatchPyTree:
-        return patch_tree.new(data=kernels.scale_kernel(patch_tree.data, self.factor))
-
-
-@dataclass(frozen=True)
-class Add(PatchOperation):
-    """Add a constant value to patch data."""
-
-    value: float
-
-    def kernel(self, patch_tree: PatchPyTree) -> PatchPyTree:
-        return patch_tree.new(data=kernels.add_kernel(patch_tree.data, self.value))
-
-
-@dataclass(frozen=True)
-class Abs(PatchOperation):
-    """Take absolute value of patch data."""
-
-    def kernel(self, patch_tree: PatchPyTree) -> PatchPyTree:
-        return patch_tree.new(data=kernels.abs_kernel(patch_tree.data))
-
-
-@dataclass(frozen=True)
-class Clip(PatchOperation):
-    """Clip patch data to a fixed range."""
-
-    min_value: float
-    max_value: float
-
-    def kernel(self, patch_tree: PatchPyTree) -> PatchPyTree:
-        return patch_tree.new(
-            data=kernels.clip_kernel(
-                patch_tree.data, self.min_value, self.max_value
-            )
-        )
-
-
-@dataclass(frozen=True)
-class Real(PatchOperation):
-    """Return the real component of patch data."""
-
-    def kernel(self, patch_tree: PatchPyTree) -> PatchPyTree:
-        return patch_tree.new(data=kernels.real_kernel(patch_tree.data))
-
-
-@dataclass(frozen=True)
-class Imag(PatchOperation):
-    """Return the imaginary component of patch data."""
-
-    def kernel(self, patch_tree: PatchPyTree) -> PatchPyTree:
-        return patch_tree.new(data=kernels.imag_kernel(patch_tree.data))
-
-
-@dataclass(frozen=True)
-class Angle(PatchOperation):
-    """Return the phase angle of patch data."""
-
-    def kernel(self, patch_tree: PatchPyTree) -> PatchPyTree:
-        return patch_tree.new(data=kernels.angle_kernel(patch_tree.data))
-
-
-@dataclass(frozen=True)
-class Conj(PatchOperation):
-    """Return the complex conjugate of patch data."""
-
-    def kernel(self, patch_tree: PatchPyTree) -> PatchPyTree:
-        return patch_tree.new(data=kernels.conj_kernel(patch_tree.data))
