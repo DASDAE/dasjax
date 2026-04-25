@@ -107,15 +107,18 @@ def test_filter_kernel_and_design_edges() -> None:
 
     zi = pass_filter_initial_state(sos)
     assert pass_filter_default_padlen(sos) > 0
-    assert np.asarray(
-        pass_filter_kernel(data, sos, axis=1, zi=zi, zerophase=False)
-    ).shape == data.shape
-    assert np.asarray(
-        pass_filter_kernel(data, sos, axis=1, zi=zi, padlen=0)
-    ).shape == data.shape
-    assert np.asarray(
-        pass_filter_kernel(data, sos, axis=1, zerophase=False)
-    ).shape == data.shape
+    assert (
+        np.asarray(pass_filter_kernel(data, sos, axis=1, zi=zi, zerophase=False)).shape
+        == data.shape
+    )
+    assert (
+        np.asarray(pass_filter_kernel(data, sos, axis=1, zi=zi, padlen=0)).shape
+        == data.shape
+    )
+    assert (
+        np.asarray(pass_filter_kernel(data, sos, axis=1, zerophase=False)).shape
+        == data.shape
+    )
     with pytest.raises(ValueError, match="requires zi"):
         pass_filter_kernel(data, jnp.asarray(sos), axis=1, zi=None)
     with pytest.raises(ValueError, match="greater than padlen"):
@@ -132,17 +135,28 @@ def test_jax_filter_kernel_edge_modes_and_validation() -> None:
     """Cover JAX-native filter modes and validation paths."""
     data = np.arange(12.0).reshape(3, 4)
 
-    assert np.asarray(gaussian_filter_kernel(data, sigma=(), axes=())).shape == data.shape
-    assert np.asarray(
-        gaussian_filter_kernel(data, sigma=(-1.0,), axes=(1,), truncate=4.0)
-    ).shape == data.shape
-    assert np.asarray(
-        gaussian_filter_kernel(data, sigma=(0.1,), axes=(1,), truncate=0.1)
-    ).shape == data.shape
+    assert (
+        np.asarray(gaussian_filter_kernel(data, sigma=(), axes=())).shape == data.shape
+    )
+    assert (
+        np.asarray(
+            gaussian_filter_kernel(data, sigma=(-1.0,), axes=(1,), truncate=4.0)
+        ).shape
+        == data.shape
+    )
+    assert (
+        np.asarray(
+            gaussian_filter_kernel(data, sigma=(0.1,), axes=(1,), truncate=0.1)
+        ).shape
+        == data.shape
+    )
     for mode in ("nearest", "constant", "wrap", "mirror"):
-        assert np.asarray(
-            gaussian_filter_kernel(data, sigma=(1.0,), axes=(1,), mode=mode)
-        ).shape == data.shape
+        assert (
+            np.asarray(
+                gaussian_filter_kernel(data, sigma=(1.0,), axes=(1,), mode=mode)
+            ).shape
+            == data.shape
+        )
     with pytest.raises(ValueError, match="Unsupported gaussian_filter mode"):
         gaussian_filter_kernel(data, sigma=(1.0,), axes=(1,), mode="bad")
 
@@ -169,17 +183,20 @@ def test_savgol_and_notch_kernel_edges() -> None:
     data = np.arange(12.0).reshape(3, 4)
     coeff, left, right = savgol_coefficients(3, 1)
 
-    assert np.asarray(
-        savgol_filter_kernel(
-            data,
-            size=(1, 3),
-            axes=(1,),
-            coeffs=(coeff,),
-            left_coeffs=(left,),
-            right_coeffs=(right,),
-            mode="nearest",
-        )
-    ).shape == data.shape
+    assert (
+        np.asarray(
+            savgol_filter_kernel(
+                data,
+                size=(1, 3),
+                axes=(1,),
+                coeffs=(coeff,),
+                left_coeffs=(left,),
+                right_coeffs=(right,),
+                mode="nearest",
+            )
+        ).shape
+        == data.shape
+    )
     with pytest.raises(ValueError, match="window_length"):
         savgol_filter_kernel(
             data[:, :2],

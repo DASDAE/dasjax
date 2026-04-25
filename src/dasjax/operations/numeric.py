@@ -123,14 +123,6 @@ class Interpolate(_DascoreCallbackOperation):
 
 
 @dataclass(frozen=True)
-class Iresample(_DascoreCallbackOperation):
-    """Deprecated DASCore interpolation-resample operation."""
-
-    def __init__(self, *args, **kwargs):
-        _init_callback(self, tuple(args), dict(kwargs))
-
-
-@dataclass(frozen=True)
 class Istft(_DascoreCallbackOperation):
     """Invert a short-time Fourier transform."""
 
@@ -158,24 +150,6 @@ class Resample(_DascoreCallbackOperation):
                 **kwargs,
             },
         )
-
-
-@dataclass(frozen=True)
-class Rfft(_DascoreCallbackOperation):
-    """Perform DASCore's real FFT transform."""
-
-    method_name: ClassVar[str | None] = "rfft"
-
-    def __init__(self, dim: str = "time"):
-        _init_callback(self, (), {"dim": dim})
-
-
-@dataclass(frozen=True)
-class Spectrogram(_DascoreCallbackOperation):
-    """Calculate a spectrogram from patch data."""
-
-    def __init__(self, dim: str = "time", **kwargs):
-        _init_callback(self, (), {"dim": dim, **kwargs})
 
 
 @dataclass(frozen=True)

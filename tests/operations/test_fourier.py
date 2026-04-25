@@ -33,7 +33,9 @@ def test_fourier_complex_paths() -> None:
     """Cover complex DFT and IDFT kernel branches."""
     patch = dc.get_example_patch()
     complex_patch = patch.update(data=patch.data + 1j * patch.data)
-    transformed = JaxPatchPipeline().dft(dim="time", real=False).compile()(complex_patch)
+    transformed = (
+        JaxPatchPipeline().dft(dim="time", real=False).compile()(complex_patch)
+    )
     expected = complex_patch.dft(dim="time", real=False)
     assert_patch_close(transformed, expected)
 

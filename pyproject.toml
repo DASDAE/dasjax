@@ -30,7 +30,6 @@ test = [
   "pytest",
   "pytest-benchmark",
   "pytest-codspeed",
-  "bottleneck",
 ]
 dev = [
   "prek>=0.3.8",

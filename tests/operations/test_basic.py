@@ -87,7 +87,9 @@ def test_roll_update_coord_is_rejected() -> None:
     """Cover unsupported roll coordinate updates."""
     patch = dc.get_example_patch()
     with pytest.raises(NotImplementedError, match="update_coord=False"):
-        JaxPatchPipeline().roll(time=1, samples=True, update_coord=True).compile()(patch)
+        JaxPatchPipeline().roll(time=1, samples=True, update_coord=True).compile()(
+            patch
+        )
 
 
 def test_aggregate_unsupported_options_are_rejected() -> None:

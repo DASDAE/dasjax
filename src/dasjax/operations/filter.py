@@ -412,7 +412,9 @@ class SlopeFilter(PatchOperation):
         )
         mask = fac if invert else 1.0 - fac
         axes = tuple(work_patch.get_axis(dim) for dim in self.dims)
-        dxs = tuple(float(dc.to_float(work_patch.get_coord(dim).step)) for dim in self.dims)
+        dxs = tuple(
+            float(dc.to_float(work_patch.get_coord(dim).step)) for dim in self.dims
+        )
         return replace(
             self,
             axes=axes,

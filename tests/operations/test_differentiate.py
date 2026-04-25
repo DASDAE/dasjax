@@ -13,9 +13,7 @@ from dasjax.kernels import differentiate_kernel
 from .helpers import assert_compiled_matches_dascore, assert_patch_close
 
 
-CASES = (
-    ("differentiate", (), {"dim": "time"}, lambda p: p.differentiate(dim="time")),
-)
+CASES = (("differentiate", (), {"dim": "time"}, lambda p: p.differentiate(dim="time")),)
 
 
 @pytest.mark.parametrize("case", CASES, ids=lambda item: item[0])

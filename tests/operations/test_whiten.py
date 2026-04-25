@@ -12,9 +12,7 @@ from dasjax.kernels import whiten_kernel
 from .helpers import assert_compiled_matches_dascore, assert_patch_close, even_patch
 
 
-CASES = (
-    ("whiten", (), {"time": None}, lambda p: p.whiten(time=None), even_patch),
-)
+CASES = (("whiten", (), {"time": None}, lambda p: p.whiten(time=None), even_patch),)
 
 
 @pytest.mark.parametrize("case", CASES, ids=lambda item: item[0])
@@ -30,10 +28,18 @@ def test_whiten_kernel_and_operation_smooth_paths() -> None:
     weight = np.linspace(1.0, 2.0, 9)
 
     assert np.asarray(whiten_kernel(data, axis=1)).shape == data.shape
-    assert np.asarray(
-        whiten_kernel(data, axis=1, window_len=3, water_level=0.1, freq_weight=weight)
-    ).shape == data.shape
-    assert np.asarray(whiten_kernel(complex_data, axis=1, window_len=1)).shape == data.shape
+    assert (
+        np.asarray(
+            whiten_kernel(
+                data, axis=1, window_len=3, water_level=0.1, freq_weight=weight
+            )
+        ).shape
+        == data.shape
+    )
+    assert (
+        np.asarray(whiten_kernel(complex_data, axis=1, window_len=1)).shape
+        == data.shape
+    )
 
     patch = dc.get_example_patch()
     pipeline = JaxPatchPipeline().whiten(time=None, smooth_size=1.0, water_level=0.1)

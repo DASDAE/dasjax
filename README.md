@@ -53,13 +53,13 @@ Operation authors use `bind(boundary)` for Python-side metadata planning, `kerne
 
 ### Operation Coverage
 
-`dasjax` currently registers 75 pipeline operations. Most operations use native JAX kernels; a smaller set of DASCore-compatible numeric transforms still use host callbacks where a fully static JAX kernel is not practical yet. The current operation set includes:
+`dasjax` currently registers 72 pipeline operations. Most operations use native JAX kernels; a smaller set of DASCore-compatible numeric transforms still use host callbacks where a fully static JAX kernel is not practical yet. The current operation set includes:
 
 - Elementwise math and masks: `abs`, `clip`, `real`, `imag`, `angle`, `conj`, `exp`, `log`, `log10`, `log2`, `is_finite`, `isinf`, `isnan`, `fillna`, `where`, and scalar arithmetic operations.
 - Reductions and aggregation: `aggregate`, `all`, `any`, `max`, `mean`, `median`, `min`, `std`, and `sum`.
 - Coordinate-aware array transforms: `flip`, `roll`, `pad`, `taper`, `taper_range`, `detrend`, `standardize`, `differentiate`, and `integrate`.
-- Spectral and signal operations: `dft`, `idft`, `rfft`, `stft`, `istft`, `spectrogram`, `hilbert`, `envelope`, `phase_weighted_stack`, `whiten`, `fbe`, and `correlate_shift`.
-- Filters, mutes, and DAS-domain operations: `pass_filter`, `gaussian_filter`, `hampel_filter`, `median_filter`, `notch_filter`, `savgol_filter`, `sobel_filter`, `slope_filter`, `wiener_filter`, `line_mute`, `slope_mute`, `correlate`, `decimate`, `interpolate`, `iresample`, `resample`, `dispersion_phase_shift`, `tau_p`, `velocity_to_strain_rate`, `velocity_to_strain_rate_edgeless`, and `radians_to_strain`.
+- Spectral and signal operations: `dft`, `idft`, `stft`, `istft`, `hilbert`, `envelope`, `phase_weighted_stack`, `whiten`, `fbe`, and `correlate_shift`.
+- Filters, mutes, and DAS-domain operations: `pass_filter`, `gaussian_filter`, `hampel_filter`, `median_filter`, `notch_filter`, `savgol_filter`, `sobel_filter`, `slope_filter`, `wiener_filter`, `line_mute`, `slope_mute`, `correlate`, `decimate`, `interpolate`, `resample`, `dispersion_phase_shift`, `tau_p`, `velocity_to_strain_rate`, `velocity_to_strain_rate_edgeless`, and `radians_to_strain`.
 
 Remaining DASCore patch methods are mostly metadata, selection, convenience, or data-dependent shape operations. `rolling` returns a roller object rather than a patch, and `dropna` has data-dependent output shape, so neither fits the current static compiled-pipeline model directly.
 
@@ -75,16 +75,15 @@ Remaining DASCore patch methods are mostly metadata, selection, convenience, or 
 Documentation is built with Zensical. The public API reference is generated at build time from the installed `dasjax` package, so run the API generation script before building or serving the site.
 
 ```bash
-python -m pip install -e ".[docs]"
-python scripts/build_api_docs.py
-zensical build --clean
+uv run python scripts/build_api_docs.py
+uv run --extra docs zensical build --clean
 ```
 
 For local preview, run:
 
 ```bash
-python scripts/build_api_docs.py
-zensical serve
+uv run python scripts/build_api_docs.py
+uv run --extra docs zensical serve
 ```
 
 Generated files under `docs/api/` and `site/` are ignored by version control. GitHub Pages builds the same generated API docs and static site on pushes to `main`, then deploys the `site/` artifact through the `github-pages` environment.

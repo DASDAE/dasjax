@@ -50,7 +50,9 @@ class LineMute(PatchOperation):
         return replace(self, mask=np.asarray(mask_patch.data))
 
     def kernel(self, patch_tree: PatchPyTree) -> PatchPyTree:
-        return patch_tree.new(data=kernels.apply_mask_kernel(patch_tree.data, self.mask))
+        return patch_tree.new(
+            data=kernels.apply_mask_kernel(patch_tree.data, self.mask)
+        )
 
 
 @dataclass(frozen=True)
@@ -99,4 +101,6 @@ class SlopeMute(PatchOperation):
         return replace(self, mask=np.asarray(mask_patch.data))
 
     def kernel(self, patch_tree: PatchPyTree) -> PatchPyTree:
-        return patch_tree.new(data=kernels.apply_mask_kernel(patch_tree.data, self.mask))
+        return patch_tree.new(
+            data=kernels.apply_mask_kernel(patch_tree.data, self.mask)
+        )

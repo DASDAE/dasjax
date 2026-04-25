@@ -7,7 +7,6 @@ import numpy as np
 import pytest
 
 from dasjax import JaxPatchPipeline
-from dasjax.operations.numeric import Iresample
 
 from .helpers import assert_patch_close
 
@@ -113,11 +112,6 @@ def test_compiled_callback_numeric_transforms_match_dascore() -> None:
             JaxPatchPipeline().resample(time=100, samples=True),
             patch.resample(time=100, samples=True),
         ),
-        (JaxPatchPipeline().rfft(dim="time"), patch.rfft(dim="time")),
-        (
-            JaxPatchPipeline().spectrogram(dim="time"),
-            patch.spectrogram(dim="time"),
-        ),
         (
             JaxPatchPipeline().stft(time=64, samples=True, overlap=32),
             patch.stft(time=64, samples=True, overlap=32),
@@ -132,11 +126,3 @@ def test_compiled_istft_matches_dascore() -> None:
     patch = dc.get_example_patch().stft(time=64, samples=True, overlap=32)
 
     assert_patch_close(JaxPatchPipeline().istft().compile()(patch), patch.istft())
-
-
-def test_iresample_constructor_preserves_varargs() -> None:
-    """Cover deprecated iresample varargs constructor."""
-    operation = Iresample("time", samples=True)
-
-    assert operation.args == ("time",)
-    assert operation.kwargs == {"samples": True}

@@ -79,7 +79,9 @@ class Maximum(PatchOperation):
     other: Any
 
     def kernel(self, patch_tree: PatchPyTree) -> PatchPyTree:
-        return patch_tree.new(data=jnp.maximum(jnp.asarray(patch_tree.data), self.other))
+        return patch_tree.new(
+            data=jnp.maximum(jnp.asarray(patch_tree.data), self.other)
+        )
 
 
 @dataclass(frozen=True)
@@ -89,7 +91,9 @@ class Minimum(PatchOperation):
     other: Any
 
     def kernel(self, patch_tree: PatchPyTree) -> PatchPyTree:
-        return patch_tree.new(data=jnp.minimum(jnp.asarray(patch_tree.data), self.other))
+        return patch_tree.new(
+            data=jnp.minimum(jnp.asarray(patch_tree.data), self.other)
+        )
 
 
 @dataclass(frozen=True)

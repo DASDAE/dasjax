@@ -93,9 +93,7 @@ class PhaseWeightedStack(PatchOperation):
                 value for idx, value in enumerate(out_coords) if idx != coord_index
             )
             out_dtype_codes = tuple(
-                value
-                for idx, value in enumerate(out_dtype_codes)
-                if idx != coord_index
+                value for idx, value in enumerate(out_dtype_codes) if idx != coord_index
             )
         return replace(
             self,

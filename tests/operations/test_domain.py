@@ -126,12 +126,15 @@ def test_domain_operation_validation_edges() -> None:
     """Cover validation paths for domain transforms."""
     patch = small_patch().set_units(distance="m", time="s")
 
-    no_freq_out = JaxPatchPipeline().dispersion_phase_shift(
-        np.asarray([100.0, 200.0])
-    ).compile()(patch)
-    assert no_freq_out.shape == patch.dispersion_phase_shift(
-        np.asarray([100.0, 200.0])
-    ).shape
+    no_freq_out = (
+        JaxPatchPipeline()
+        .dispersion_phase_shift(np.asarray([100.0, 200.0]))
+        .compile()(patch)
+    )
+    assert (
+        no_freq_out.shape
+        == patch.dispersion_phase_shift(np.asarray([100.0, 200.0])).shape
+    )
 
     for velocities, message in (
         (np.asarray([200.0, 100.0]), "monotonically increasing"),

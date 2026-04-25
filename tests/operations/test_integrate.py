@@ -12,9 +12,7 @@ from dasjax.kernels import integrate_kernel
 from .helpers import assert_compiled_matches_dascore, assert_patch_close
 
 
-CASES = (
-    ("integrate", (), {"dim": "time"}, lambda p: p.integrate(dim="time")),
-)
+CASES = (("integrate", (), {"dim": "time"}, lambda p: p.integrate(dim="time")),)
 
 
 @pytest.mark.parametrize("case", CASES, ids=lambda item: item[0])

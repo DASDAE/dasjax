@@ -37,8 +37,10 @@ class TauP(PatchOperation):
             raise ParameterError("Input velocities must be positive.")
         if not np.all(np.diff(velocities) > 0):
             raise ParameterError("Input velocities must be monotonically increasing.")
-        patch = dummy_patch(boundary).convert_units(distance="m", time="s").transpose(
-            "distance", "time"
+        patch = (
+            dummy_patch(boundary)
+            .convert_units(distance="m", time="s")
+            .transpose("distance", "time")
         )
         out_patch = patch.tau_p(velocities)
         out_tree, out_boundary = tree_boundary_from_patch(out_patch)

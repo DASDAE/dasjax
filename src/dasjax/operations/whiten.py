@@ -48,9 +48,7 @@ class Whiten(PatchOperation):
         axis_dim = fft_dim if input_is_fft else dim
         axis = boundary.axis(axis_dim)
         sample_step = (
-            1.0
-            if input_is_fft
-            else abs(float(dc.to_float(boundary.coord(dim).step)))
+            1.0 if input_is_fft else abs(float(dc.to_float(boundary.coord(dim).step)))
         )
         axis_len = len(boundary.coord(axis_dim))
         pad_after = 0 if input_is_fft else next_fast_len(axis_len) - axis_len
@@ -85,12 +83,15 @@ class Whiten(PatchOperation):
             pad_width = [(0, 0)] * len(patch_tree.dims)
             pad_width[self.axis] = (0, self.pad_after)
             data = jnp.pad(data, tuple(pad_width))
-        data = kernels.whiten_kernel(
-            data,
-            axis=self.axis,
-            window_len=self.window_len,
-            water_level=self.water_level,
-        ) / self.sample_step
+        data = (
+            kernels.whiten_kernel(
+                data,
+                axis=self.axis,
+                window_len=self.window_len,
+                water_level=self.water_level,
+            )
+            / self.sample_step
+        )
         if self.pad_after:
             slices = [slice(None)] * data.ndim
             slices[self.axis] = slice(0, data.shape[self.axis] - self.pad_after)

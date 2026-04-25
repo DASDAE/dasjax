@@ -35,13 +35,17 @@ class DispersionPhaseShift(PatchOperation):
     def bind(self, boundary: PatchBoundary) -> Self:
         velocities = np.asarray(self.phase_velocities, dtype=np.float64)
         if not np.all(np.diff(velocities) > 0):
-            raise ParameterError("Velocities for dispersion must be monotonically increasing")
+            raise ParameterError(
+                "Velocities for dispersion must be monotonically increasing"
+            )
         if np.amin(velocities) <= 0:
             raise ParameterError("Velocities must be positive.")
         if self.approx_resolution is not None and self.approx_resolution <= 0:
             raise ParameterError("Frequency resolution has to be positive")
-        patch = dummy_patch(boundary).convert_units(distance="m").transpose(
-            "distance", "time"
+        patch = (
+            dummy_patch(boundary)
+            .convert_units(distance="m")
+            .transpose("distance", "time")
         )
         time = patch.coords.get_array("time")
         dt = (time[1] - time[0]) / np.timedelta64(1, "s")
@@ -52,9 +56,13 @@ class DispersionPhaseShift(PatchOperation):
         else:
             approx_min_freq, approx_max_freq = self.approx_freq
             if approx_min_freq <= 0 or approx_max_freq <= 0:
-                raise ParameterError("Minimal and maximal frequencies have to be positive")
+                raise ParameterError(
+                    "Minimal and maximal frequencies have to be positive"
+                )
             if approx_min_freq >= approx_max_freq:
-                raise ParameterError("Maximal frequency needs to be larger than minimal frequency")
+                raise ParameterError(
+                    "Maximal frequency needs to be larger than minimal frequency"
+                )
             if approx_min_freq >= 0.5 / dt or approx_max_freq >= 0.5 / dt:
                 raise ParameterError("Frequency range cannot exceed Nyquist")
         nt = len(time)
@@ -67,7 +75,9 @@ class DispersionPhaseShift(PatchOperation):
         first_live_f = int(np.argmax(omega >= 2 * np.pi * approx_min_freq))
         last_live_f = int(np.argmax(omega >= 2 * np.pi * approx_max_freq))
         if last_live_f - first_live_f < 1:
-            raise ParameterError("Combination of frequency resolution and range is not an array")
+            raise ParameterError(
+                "Combination of frequency resolution and range is not an array"
+            )
         out_patch = patch.dispersion_phase_shift(
             velocities,
             approx_resolution=self.approx_resolution,

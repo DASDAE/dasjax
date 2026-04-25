@@ -99,7 +99,10 @@ def _case_label(value: Any) -> str:
             shape_label = {
                 (600, 4000): "medium",
                 (1200, 8000): "large",
-            }.get(tuple(int(axis) for axis in shape), "x".join(str(axis) for axis in shape))
+            }.get(
+                tuple(int(axis) for axis in shape),
+                "x".join(str(axis) for axis in shape),
+            )
             dtype_label = str(dtype).removeprefix("float")
             return f"{shape_label}-f{dtype_label}"
     return str(value)
@@ -187,7 +190,9 @@ def load_json(path: Path) -> dict[str, Any]:
 def write_json(path: Path, payload: dict[str, Any]) -> None:
     """Write stable, pretty JSON to a path."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
 
 
 def _format_ms(value: float | None) -> str:
@@ -204,16 +209,29 @@ def _format_speedup(value: float | None) -> str:
     return f"{value:.2f}x"
 
 
+def _sort_value(value: float | None) -> str:
+    """Return a stable table sort value for optional numeric cells."""
+    if value is None or not math.isfinite(value):
+        return ""
+    return f"{value:.12g}"
+
+
 def _benchmark_category(group: str) -> str:
     """Return a human category for a benchmark group."""
     return "Method" if group.startswith("operation_") else "Pipeline"
 
 
-def _split_rows(snapshot: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def _split_rows(
+    snapshot: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Return pipeline rows and method rows from a benchmark snapshot."""
     rows = snapshot.get("rows") or []
-    pipelines = [row for row in rows if not str(row.get("group", "")).startswith("operation_")]
-    methods = [row for row in rows if str(row.get("group", "")).startswith("operation_")]
+    pipelines = [
+        row for row in rows if not str(row.get("group", "")).startswith("operation_")
+    ]
+    methods = [
+        row for row in rows if str(row.get("group", "")).startswith("operation_")
+    ]
     return pipelines, methods
 
 
@@ -291,14 +309,38 @@ def _benchmark_display_name(group: str) -> str:
 
 
 def _render_filter_script() -> str:
-    """Return client-side table filtering script."""
+    """Return client-side table filtering and sorting script."""
     return """
 <script>
 (() => {
   for (const table of document.querySelectorAll("[data-benchmark-table]")) {
     const input = table.querySelector("[data-benchmark-filter]");
-    const rows = Array.from(table.querySelectorAll("tbody tr"));
+    const tbody = table.querySelector("tbody");
+    const rows = Array.from(tbody.querySelectorAll("tr"));
     const count = table.querySelector("[data-benchmark-count]");
+    const headers = Array.from(table.querySelectorAll("th[data-sort-index]"));
+    let sortState = { index: null, direction: "asc", type: "text" };
+    const cellValue = (row, index, type) => {
+      const cell = row.children[index];
+      const raw = cell?.dataset.sortValue || cell?.textContent || "";
+      if (type === "number") {
+        const value = Number.parseFloat(raw);
+        return Number.isFinite(value) ? value : Number.NEGATIVE_INFINITY;
+      }
+      return raw.trim().toLowerCase();
+    };
+    const applySort = () => {
+      if (sortState.index === null) return;
+      const direction = sortState.direction === "asc" ? 1 : -1;
+      const sorted = [...rows].sort((left, right) => {
+        const leftValue = cellValue(left, sortState.index, sortState.type);
+        const rightValue = cellValue(right, sortState.index, sortState.type);
+        if (leftValue < rightValue) return -1 * direction;
+        if (leftValue > rightValue) return 1 * direction;
+        return 0;
+      });
+      for (const row of sorted) tbody.appendChild(row);
+    };
     const update = () => {
       const query = input.value.trim().toLowerCase();
       let visible = 0;
@@ -309,6 +351,30 @@ def _render_filter_script() -> str:
       }
       if (count) count.textContent = `${visible} of ${rows.length} rows`;
     };
+    for (const header of headers) {
+      const button = header.querySelector("button");
+      button.addEventListener("click", () => {
+        const index = Number.parseInt(header.dataset.sortIndex, 10);
+        const sameColumn = sortState.index === index;
+        sortState = {
+          index,
+          direction: sameColumn && sortState.direction === "asc" ? "desc" : "asc",
+          type: header.dataset.sortType || "text",
+        };
+        for (const item of headers) {
+          item.setAttribute("aria-sort", "none");
+          item.querySelector("[data-sort-indicator]").textContent = "";
+        }
+        header.setAttribute(
+          "aria-sort",
+          sortState.direction === "asc" ? "ascending" : "descending",
+        );
+        header.querySelector("[data-sort-indicator]").textContent =
+          sortState.direction === "asc" ? "▲" : "▼";
+        applySort();
+        update();
+      });
+    }
     input.addEventListener("input", update);
     update();
   }
@@ -345,8 +411,45 @@ def _render_table_style() -> str:
 .dasjax-benchmark-table tbody tr:hover {
   background: var(--md-code-bg-color);
 }
+.dasjax-benchmark-table th button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+.dasjax-benchmark-sort-indicator {
+  display: inline-block;
+  width: 0.75rem;
+  color: var(--md-default-fg-color--light);
+  font-size: 0.7rem;
+}
 </style>
 """.strip()
+
+
+def _sortable_header(
+    label: str,
+    index: int,
+    *,
+    sort_type: str = "text",
+    align: str | None = None,
+) -> str:
+    """Return a sortable table header cell."""
+    style = ' style="text-align: right;"' if align == "right" else ""
+    escaped = html.escape(label)
+    return (
+        f'<th{style} data-sort-index="{index}" data-sort-type="{sort_type}" '
+        'aria-sort="none">'
+        f'<button type="button">{escaped}'
+        '<span class="dasjax-benchmark-sort-indicator" '
+        "data-sort-indicator></span></button></th>"
+    )
 
 
 def render_benchmark_table_page(
@@ -373,11 +476,11 @@ def render_benchmark_table_page(
         "<table>",
         "<thead>",
         "<tr>",
-        "<th>Benchmark</th>",
-        "<th>Case</th>",
-        '<th style="text-align: right;">DASCore mean (ms)</th>',
-        '<th style="text-align: right;">dasjax mean (ms)</th>',
-        '<th style="text-align: right;">Speedup</th>',
+        _sortable_header("Benchmark", 0),
+        _sortable_header("Case", 1),
+        _sortable_header("DASCore mean (ms)", 2, sort_type="number", align="right"),
+        _sortable_header("dasjax mean (ms)", 3, sort_type="number", align="right"),
+        _sortable_header("Speedup", 4, sort_type="number", align="right"),
         "</tr>",
         "</thead>",
         "<tbody>",
@@ -390,9 +493,15 @@ def render_benchmark_table_page(
                 "<tr>",
                 f"<td><code>{group}</code></td>",
                 f"<td><code>{case}</code></td>",
-                f'<td style="text-align: right;">{html.escape(_format_ms(row.get("dascore_mean_s")))}</td>',
-                f'<td style="text-align: right;">{html.escape(_format_ms(row.get("dasjax_mean_s")))}</td>',
-                f'<td style="text-align: right;">{html.escape(_format_speedup(row.get("speedup")))}</td>',
+                '<td style="text-align: right;" '
+                f'data-sort-value="{_sort_value(row.get("dascore_mean_s"))}">'
+                f"{html.escape(_format_ms(row.get('dascore_mean_s')))}</td>",
+                '<td style="text-align: right;" '
+                f'data-sort-value="{_sort_value(row.get("dasjax_mean_s"))}">'
+                f"{html.escape(_format_ms(row.get('dasjax_mean_s')))}</td>",
+                '<td style="text-align: right;" '
+                f'data-sort-value="{_sort_value(row.get("speedup"))}">'
+                f"{html.escape(_format_speedup(row.get('speedup')))}</td>",
                 "</tr>",
             ]
         )
@@ -417,7 +526,9 @@ def render_benchmark_docs(snapshot: dict[str, Any]) -> str:
 def normalize_command(args: argparse.Namespace) -> int:
     """Normalize a raw pytest-benchmark JSON file."""
     raw = load_json(args.input)
-    command = args.command or f"pytest {DEFAULT_BENCHMARK_FILE} --benchmark-json={args.input}"
+    command = (
+        args.command or f"pytest {DEFAULT_BENCHMARK_FILE} --benchmark-json={args.input}"
+    )
     snapshot = normalize_benchmark_json(raw, command=command, source=args.source)
     write_json(args.output, snapshot)
     print(f"Wrote {args.output}")
@@ -479,7 +590,9 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--output", type=Path, default=DEFAULT_RAW_OUTPUT)
     run.add_argument("--benchmark", action="append", help="filter benchmark group/name")
     run.add_argument("--case", action="append", help="filter fixture case label")
-    run.add_argument("--pytest-arg", action="append", default=[], help="extra pytest arg")
+    run.add_argument(
+        "--pytest-arg", action="append", default=[], help="extra pytest arg"
+    )
     run.set_defaults(func=run_benchmarks)
 
     normalize = subparsers.add_parser("normalize", help="normalize raw JSON")
@@ -500,9 +613,13 @@ def build_parser() -> argparse.ArgumentParser:
     refresh.add_argument("--snapshot", type=Path, default=DEFAULT_SNAPSHOT)
     refresh.add_argument("--docs-output", type=Path, default=DEFAULT_DOCS_OUTPUT)
     refresh.add_argument("--source", default="local")
-    refresh.add_argument("--benchmark", action="append", help="filter benchmark group/name")
+    refresh.add_argument(
+        "--benchmark", action="append", help="filter benchmark group/name"
+    )
     refresh.add_argument("--case", action="append", help="filter fixture case label")
-    refresh.add_argument("--pytest-arg", action="append", default=[], help="extra pytest arg")
+    refresh.add_argument(
+        "--pytest-arg", action="append", default=[], help="extra pytest arg"
+    )
     refresh.set_defaults(func=refresh_command)
 
     return parser
@@ -510,6 +627,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the benchmark CLI."""
+    if argv is None:
+        argv = sys.argv[1:]
+    if not argv:
+        argv = ["refresh"]
     parser = build_parser()
     args = parser.parse_args(argv)
     return int(args.func(args))

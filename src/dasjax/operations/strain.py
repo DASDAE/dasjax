@@ -14,7 +14,12 @@ from dascore.units import convert_units, get_factor_and_unit, get_unit
 from dasjax.core import PatchBoundary, PatchOperation, PatchPyTree
 
 from .. import kernels
-from .common import dummy_patch, get_data_units_from_dims, replace, tree_boundary_from_patch
+from .common import (
+    dummy_patch,
+    get_data_units_from_dims,
+    replace,
+    tree_boundary_from_patch,
+)
 
 
 @dataclass(frozen=True)
@@ -90,7 +95,9 @@ class VelocityToStrainRateEdgeless(PatchOperation):
             step_multiple=self.step_multiple
         )
         out_tree, out_boundary = tree_boundary_from_patch(out_patch)
-        gauge_length = float(dc.to_float(boundary.coord("distance").step)) * self.step_multiple
+        gauge_length = (
+            float(dc.to_float(boundary.coord("distance").step)) * self.step_multiple
+        )
         return replace(
             self,
             axis=boundary.axis("distance"),

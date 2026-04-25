@@ -76,11 +76,8 @@ EXPECTED_OPERATIONS = (
     "correlate",
     "decimate",
     "interpolate",
-    "iresample",
     "istft",
     "resample",
-    "rfft",
-    "spectrogram",
     "stft",
 )
 
@@ -154,11 +151,8 @@ EXPECTED_OPERATION_MODULES = {
     "correlate": "dasjax.operations.numeric",
     "decimate": "dasjax.operations.numeric",
     "interpolate": "dasjax.operations.numeric",
-    "iresample": "dasjax.operations.numeric",
     "istft": "dasjax.operations.numeric",
     "resample": "dasjax.operations.numeric",
-    "rfft": "dasjax.operations.numeric",
-    "spectrogram": "dasjax.operations.numeric",
     "stft": "dasjax.operations.numeric",
 }
 
