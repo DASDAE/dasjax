@@ -7,6 +7,8 @@ from typing import Any
 import jax.numpy as jnp
 import numpy as np
 
+from dasjax import compat
+
 
 def validate_detrend_type(type: str) -> str:
     """Normalize supported detrend type aliases."""
@@ -57,24 +59,52 @@ def detrend_kernel(data: Any, axis: int, type: str) -> Any:
 def normalize_kernel(data: Any, axis: int, norm: str = "l2") -> Any:
     """Normalize an array along one axis using DASCore semantics."""
     data = jnp.asarray(data)
-    # L1/L2 both reduce to a norm plus a broadcasted divide.
+    # DASCore changed how nulls and zero norms are treated in 0.1.21, and
+    # dasjax supports both sides of that change. See dasjax.compat.
+    skip_nulls = compat.normalize_skips_nulls()
+
     if norm in {"l1", "l2"}:
-        order = int(norm[-1])
-        norm_values = jnp.linalg.norm(data, axis=axis, ord=order)
-        expanded_norm = jnp.expand_dims(norm_values, axis=axis)
-        # Zero-norm slices map to zeros instead of NaNs.
-        return jnp.where(expanded_norm != 0, data / expanded_norm, 0)
-    if norm == "max":
-        # Max normalization matches DASCore's sign-preserving divide-by-peak behavior.
-        norm_values = jnp.max(data, axis=axis)
-        expanded_norm = jnp.expand_dims(norm_values, axis=axis)
-        return jnp.where(expanded_norm != 0, data / expanded_norm, 0)
-    if norm == "bit":
+        # The float exponent promotes ints so the powers cannot overflow a
+        # narrow dtype, exactly as DASCore's own kernel does.
+        order = float(norm[-1])
+        powers = jnp.abs(data) ** order
+        total = (
+            jnp.nansum(powers, axis=axis) if skip_nulls else jnp.sum(powers, axis=axis)
+        )
+        divisor = jnp.expand_dims(total ** (1 / order), axis=axis)
+    elif norm == "max":
+        # DASCore divided by the signed maximum until 0.1.18 and by the peak
+        # absolute value from then on, which differ for any slice whose most
+        # negative sample outweighs its most positive one.
+        peaks = jnp.abs(data) if compat.normalize_max_uses_absolute() else data
+        if skip_nulls:
+            peak = jnp.nanmax(peaks, axis=axis)
+        else:
+            peak = jnp.max(peaks, axis=axis)
+            if jnp.issubdtype(peaks.dtype, jnp.inexact):
+                # Unlike numpy's, jnp.max does not reliably carry a NaN out of
+                # a large reduction, and before 0.1.21 DASCore let one null
+                # blank its whole slice. Put the null back explicitly.
+                peak = jnp.where(
+                    jnp.any(jnp.isnan(peaks), axis=axis),
+                    jnp.asarray(jnp.nan, dtype=peak.dtype),
+                    peak,
+                )
+        divisor = jnp.expand_dims(peak, axis=axis)
+    elif norm == "bit":
         # Bit normalization keeps only the sign/phase of each sample.
-        abs_data = jnp.abs(data)
-        return jnp.where(abs_data != 0, data / abs_data, 0)
-    msg = f"Unsupported normalization mode {norm!r}."
-    raise ValueError(msg)
+        divisor = jnp.abs(data)
+    else:
+        msg = f"Unsupported normalization mode {norm!r}."
+        raise ValueError(msg)
+
+    if skip_nulls:
+        # A zero divisor means there is nothing but zeros and nulls to scale,
+        # so divide those by one: the zeros stay zero and the nulls stay null.
+        one = jnp.asarray(1, dtype=divisor.dtype)
+        return data / jnp.where(divisor == 0, one, divisor)
+    # Before 0.1.21 a zero divisor blanked the whole slice instead.
+    return jnp.where(divisor != 0, data / divisor, 0)
 
 
 def differentiate_kernel(

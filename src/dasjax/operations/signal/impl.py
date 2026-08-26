@@ -22,7 +22,7 @@ from dascore.units import Quantity
 from dascore.utils.misc import iterate
 from scipy.signal import get_window
 
-from dasjax import kernels
+from dasjax import compat, kernels
 
 from ..common import get_axis, get_axis_from_dims, update_patch
 from ..patch_ops import MetaDelta, PatchOp, PatchSpec
@@ -141,10 +141,14 @@ class IntegrateOp(PatchOp):
             val = coord.step if coord.evenly_sampled else coord.data
             dxs_or_spacing.append(dc.to_float(val))
             axes.append(patch.get_axis(dim_name))
-        new_attrs = patch.attrs.update(
-            data_units=_get_data_units_from_dims_local(patch, dims, mul),
-            coords={} if definite else patch.attrs.coords,
-        )
+        updates = {"data_units": _get_data_units_from_dims_local(patch, dims, mul)}
+        # A definite integral reduces the dims away, so any coordinate
+        # metadata the attributes still describe has to go with them. On
+        # DASCore's dev branch the attributes no longer carry coordinates at
+        # all, and there is nothing left to clear.
+        if definite and compat.attrs_carry_coords(patch.attrs):
+            updates["coords"] = {}
+        new_attrs = patch.attrs.update(**updates)
         return cls(
             axes=tuple(axes),
             dxs_or_spacing=tuple(dxs_or_spacing),
