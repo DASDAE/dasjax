@@ -11,7 +11,7 @@ from dascore.utils.misc import iterate
 
 from dasjax.core import PatchBoundary, PatchOperation, PatchPyTree
 
-from .. import kernels
+from .. import compat, kernels
 from .common import (
     dummy_patch,
     get_data_units_from_dims,
@@ -43,10 +43,14 @@ class Integrate(PatchOperation):
             val = coord.step if coord.evenly_sampled else coord.data
             dxs.append(dc.to_float(val))
             axes.append(boundary.axis(dim))
-        attrs = boundary.attrs.update(
-            data_units=get_data_units_from_dims(boundary, dims, mul),
-            coords={} if self.definite else boundary.attrs.coords,
-        )
+        updates = {"data_units": get_data_units_from_dims(boundary, dims, mul)}
+        # A definite integral reduces the dims away, so any coordinate
+        # metadata the attributes still describe has to go with them. On
+        # DASCore's dev branch the attributes no longer carry coordinates at
+        # all, and there is nothing left to clear.
+        if self.definite and compat.attrs_carry_coords(boundary.attrs):
+            updates["coords"] = {}
+        attrs = boundary.attrs.update(**updates)
         if self.definite:
             out_patch = dummy_patch(boundary).integrate(dim=dims, definite=True)
             out_tree, out_boundary = tree_boundary_from_patch(out_patch)
