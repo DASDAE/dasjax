@@ -1,9 +1,10 @@
-"""Parity on the cases that separate the DASCore versions dasjax supports.
+"""Parity on the slices where a wrong normalize still looks right.
 
 The shared fixture suite in `conftest` happens not to discriminate here: no
-example patch has both a slice whose most negative sample outweighs its most
-positive one and a slice that is nothing but nulls. Those are exactly the
-slices DASCore has changed its mind about, so they get their own patches.
+example patch has a slice whose most negative sample outweighs its most
+positive one, or a slice that is nothing but nulls and zeros. Those are the
+only slices that tell DASCore's normalize apart from the plausible wrong
+answers, so they get their own patches.
 """
 
 from __future__ import annotations
