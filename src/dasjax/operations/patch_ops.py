@@ -68,7 +68,9 @@ class PatchSpec:
         return PatchSpec(
             dims=self.dims if meta.dims is None else meta.dims,
             attrs=self.attrs if meta.attrs is None else meta.attrs,
-            coord_specs=self.coord_specs if meta.coord_specs is None else meta.coord_specs,
+            coord_specs=self.coord_specs
+            if meta.coord_specs is None
+            else meta.coord_specs,
         )
 
 
@@ -165,11 +167,10 @@ class PatchOp:
         """Group registered PatchOp subclasses by compile category."""
         categories: dict[str, list[str]] = {}
         for subclass in cls._subclasses:
-            categories.setdefault(subclass.compile_category, []).append(subclass.__name__)
-        return {
-            key: tuple(sorted(value))
-            for key, value in sorted(categories.items())
-        }
+            categories.setdefault(subclass.compile_category, []).append(
+                subclass.__name__
+            )
+        return {key: tuple(sorted(value)) for key, value in sorted(categories.items())}
 
     @classmethod
     def prepare(cls, patch: dc.Patch, *args: Any, **kwargs: Any) -> "PatchOp":
@@ -201,8 +202,7 @@ class PatchOp:
     @staticmethod
     def _requires_selected(op: "PatchOp") -> bool:
         return any(
-            name.startswith("selected_")
-            for name in PatchOp._kernel_parameters(op)
+            name.startswith("selected_") for name in PatchOp._kernel_parameters(op)
         )
 
     @staticmethod
@@ -225,10 +225,16 @@ class PatchOp:
             if selected_dim not in patch.dims:
                 msg = f"Selected dim {selected_dim!r} is not in patch dims {patch.dims!r}."
                 raise ValueError(msg)
-            return selected_dim, patch.get_axis(selected_dim), patch.get_coord(selected_dim)
+            return (
+                selected_dim,
+                patch.get_axis(selected_dim),
+                patch.get_coord(selected_dim),
+            )
         dim_keys = tuple(key for key in kwargs if key in patch.dims)
         if not dim_keys:
-            msg = "Kernel requested selected_* binding but no selected dim was provided."
+            msg = (
+                "Kernel requested selected_* binding but no selected dim was provided."
+            )
             raise ValueError(msg)
         if len(dim_keys) > 1:
             msg = (

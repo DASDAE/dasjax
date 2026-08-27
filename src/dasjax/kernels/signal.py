@@ -57,24 +57,32 @@ def detrend_kernel(data: Any, axis: int, type: str) -> Any:
 def normalize_kernel(data: Any, axis: int, norm: str = "l2") -> Any:
     """Normalize an array along one axis using DASCore semantics."""
     data = jnp.asarray(data)
-    # L1/L2 both reduce to a norm plus a broadcasted divide.
+
     if norm in {"l1", "l2"}:
-        order = int(norm[-1])
-        norm_values = jnp.linalg.norm(data, axis=axis, ord=order)
-        expanded_norm = jnp.expand_dims(norm_values, axis=axis)
-        # Zero-norm slices map to zeros instead of NaNs.
-        return jnp.where(expanded_norm != 0, data / expanded_norm, 0)
-    if norm == "max":
-        # Max normalization matches DASCore's sign-preserving divide-by-peak behavior.
-        norm_values = jnp.max(data, axis=axis)
-        expanded_norm = jnp.expand_dims(norm_values, axis=axis)
-        return jnp.where(expanded_norm != 0, data / expanded_norm, 0)
-    if norm == "bit":
+        # The float exponent promotes ints so the powers cannot overflow a
+        # narrow dtype, exactly as DASCore's own kernel does.
+        order = float(norm[-1])
+        total = jnp.nansum(jnp.abs(data) ** order, axis=axis)
+        divisor = jnp.expand_dims(total ** (1 / order), axis=axis)
+    elif norm == "max":
+        # The peak absolute value, not the signed maximum: the two differ for
+        # any slice whose most negative sample outweighs its most positive one.
+        divisor = jnp.expand_dims(jnp.nanmax(jnp.abs(data), axis=axis), axis=axis)
+    elif norm == "bit":
         # Bit normalization keeps only the sign/phase of each sample.
-        abs_data = jnp.abs(data)
-        return jnp.where(abs_data != 0, data / abs_data, 0)
-    msg = f"Unsupported normalization mode {norm!r}."
-    raise ValueError(msg)
+        divisor = jnp.abs(data)
+    else:
+        msg = f"Unsupported normalization mode {norm!r}."
+        raise ValueError(msg)
+
+    # A zero divisor means there is nothing but zeros and nulls to scale, so
+    # divide those by one: the zeros stay zero and the nulls stay null.
+    one = jnp.asarray(1, dtype=divisor.dtype)
+    out = data / jnp.where(divisor == 0, one, divisor)
+    # JAX and numpy disagree about the dtype of an integer division: int32
+    # over int32 is float32 here and float64 there. Ask numpy which it would
+    # have produced rather than guessing at the promotion rules.
+    return out.astype((np.ones((), data.dtype) / np.ones((), divisor.dtype)).dtype)
 
 
 def differentiate_kernel(

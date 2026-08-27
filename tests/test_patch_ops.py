@@ -136,23 +136,16 @@ def test_pad_patch_op_matches_patch_impl() -> None:
 def test_patch_op_segment_chain_matches_eager() -> None:
     """Match eager behavior for a mixed compiled PatchOp chain."""
     patch = dc.get_example_patch()
-    pipeline = (
-        JaxPatchPipeline()
-        .scale(2.0)
-        .pad(time=(2, 3), samples=True)
-        .flip("time")
-    )
+    pipeline = JaxPatchPipeline().scale(2.0).pad(time=(2, 3), samples=True).flip("time")
 
     out = pipeline.compile()(patch)
-    expected = (
-        get_operation("flip").patch_impl(
-            get_operation("pad").patch_impl(
-                get_operation("scale").patch_impl(patch, 2.0),
-                time=(2, 3),
-                samples=True,
-            ),
-            "time",
-        )
+    expected = get_operation("flip").patch_impl(
+        get_operation("pad").patch_impl(
+            get_operation("scale").patch_impl(patch, 2.0),
+            time=(2, 3),
+            samples=True,
+        ),
+        "time",
     )
 
     assert np.allclose(out.data, expected.data, equal_nan=True)
