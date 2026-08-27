@@ -78,7 +78,11 @@ def normalize_kernel(data: Any, axis: int, norm: str = "l2") -> Any:
     # A zero divisor means there is nothing but zeros and nulls to scale, so
     # divide those by one: the zeros stay zero and the nulls stay null.
     one = jnp.asarray(1, dtype=divisor.dtype)
-    return data / jnp.where(divisor == 0, one, divisor)
+    out = data / jnp.where(divisor == 0, one, divisor)
+    # JAX and numpy disagree about the dtype of an integer division: int32
+    # over int32 is float32 here and float64 there. Ask numpy which it would
+    # have produced rather than guessing at the promotion rules.
+    return out.astype((np.ones((), data.dtype) / np.ones((), divisor.dtype)).dtype)
 
 
 def differentiate_kernel(

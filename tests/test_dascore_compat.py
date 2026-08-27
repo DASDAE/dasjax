@@ -2,9 +2,9 @@
 
 The shared fixture suite in `conftest` happens not to discriminate here: no
 example patch has a slice whose most negative sample outweighs its most
-positive one, or a slice that is nothing but nulls and zeros. Those are the
-only slices that tell DASCore's normalize apart from the plausible wrong
-answers, so they get their own patches.
+positive one, or a slice that is nothing but nulls and zeros, and its patches
+do not vary the dtype. Those are the cases that tell DASCore's normalize apart
+from the plausible wrong answers, so they get their own patches here.
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ from dasjax import JaxPatchPipeline
 from dasjax.operations import get_operation
 
 NORMS = ("l1", "l2", "max", "bit")
+DTYPES = ("float64", "float32", "int64", "int32", "int16", "uint8")
 
 
 def _patch(data: np.ndarray) -> dc.Patch:
@@ -93,3 +94,20 @@ def test_integrate_matches_dascore(negative_dominant_patch, definite):
         equal_nan=True,
     )
     assert compiled.dims == expected.dims
+
+
+@pytest.mark.parametrize("dtype", DTYPES)
+@pytest.mark.parametrize("norm", NORMS)
+def test_normalize_dtype_matches_dascore(dtype, norm):
+    """The output dtype follows DASCore's, not JAX's promotion rules.
+
+    JAX true-divides int32 by int32 to float32 where numpy gives float64, so
+    an integer patch came out of `max` and `bit` at half the width DASCore
+    would have produced.
+    """
+    values = [[2, 1, 3], [5, 9, 2]] if dtype == "uint8" else [[-2, 1, 3], [5, -9, 2]]
+    patch = _patch(np.array(values, dtype=dtype))
+    expected = patch.normalize("many", norm=norm)
+    compiled = JaxPatchPipeline().normalize(dim="many", norm=norm).compile()(patch)
+    assert np.asarray(compiled.data).dtype == expected.data.dtype
+    np.testing.assert_allclose(np.asarray(compiled.data), expected.data, rtol=1e-6)
