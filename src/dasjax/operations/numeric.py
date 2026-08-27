@@ -102,8 +102,13 @@ class _DascoreCallbackOperation(PatchOperation):
 class Correlate(_DascoreCallbackOperation):
     """Correlate source rows or columns with all other rows or columns."""
 
-    def __init__(self, samples: bool = False, lag=None, **kwargs):
-        _init_callback(self, (), {"samples": samples, "lag": lag, **kwargs})
+    def __init__(self, samples: bool = False, **kwargs):
+        # `lag` is deliberately not defaulted into the call. DASCore's dev
+        # branch removed the parameter and rejects it outright, `lag=None`
+        # included, asking callers to select on the lag coordinate instead.
+        # Forwarding it only when it is given keeps the release's behaviour
+        # and lets dev's own error reach anyone who really passes one.
+        _init_callback(self, (), {"samples": samples, **kwargs})
 
 
 @dataclass(frozen=True)
