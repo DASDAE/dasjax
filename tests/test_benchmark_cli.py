@@ -36,9 +36,11 @@ from dasjax.benchmark_cli import (
 
 def test_build_pytest_command_with_filters() -> None:
     """Build a filtered pytest-benchmark command."""
+    benchmark_file = Path("benchmarks/test_pipeline_benchmarks.py")
+    output = Path(".benchmarks/current.json")
     args = argparse.Namespace(
-        benchmark_file=Path("benchmarks/test_pipeline_benchmarks.py"),
-        output=Path(".benchmarks/current.json"),
+        benchmark_file=benchmark_file,
+        output=output,
         benchmark=["scale_fbe"],
         case=["medium-f64"],
         pytest_arg=["--benchmark-min-rounds=1"],
@@ -47,7 +49,10 @@ def test_build_pytest_command_with_filters() -> None:
     command = build_pytest_command(args)
 
     assert command[:3] == [sys.executable, "-m", "pytest"]
-    assert "--benchmark-json=.benchmarks/current.json" in command
+    # Interpolate the paths rather than spelling them out: Path renders a
+    # backslash separator on Windows, and a literal here fails there.
+    assert command[3] == str(benchmark_file)
+    assert f"--benchmark-json={output}" in command
     assert command[command.index("-k") + 1] == "(scale_fbe) and (medium-f64)"
     assert command[-1] == "--benchmark-min-rounds=1"
 

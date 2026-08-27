@@ -194,5 +194,10 @@ def test_mute_and_strain_validation_edges() -> None:
         JaxPatchPipeline().velocity_to_strain_rate_edgeless(step_multiple=0).compile()(
             strain_patch
         )
+    # Clear the gauge length rather than trusting the example patch not to
+    # have one. It carries `gauge_length = "N."` on DASCore's dev branch,
+    # which is neither absent nor a length -- see DASDAE/dascore#1078.
     with pytest.raises(ParameterError, match="Gauge length"):
-        JaxPatchPipeline().radians_to_strain().compile()(strain_patch)
+        JaxPatchPipeline().radians_to_strain().compile()(
+            strain_patch.update_attrs(gauge_length=None)
+        )
