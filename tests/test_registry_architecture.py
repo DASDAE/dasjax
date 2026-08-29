@@ -1,83 +1,199 @@
-"""Architecture-level checks for the operation registry rewrite."""
+"""Architecture-level checks for the core operation registry."""
 
 from __future__ import annotations
 
-import inspect
-
 import dasjax
-
-from dasjax.operations.basic import impl as basic_impl
-from dasjax.operations.filters import impl as filters_impl
-from dasjax.operations import ExecutionPolicy, PatchOp, iter_operations
-from dasjax.operations import basic, filters, signal, spectral
-from dasjax.operations.signal import impl as signal_impl
-from dasjax.operations.registry import OPERATIONS, list_operations
-from dasjax.operations.spectral import impl as spectral_impl
+from dasjax import PatchOperation, get_patch_operation, iter_patch_operations
 
 
-def test_registry_operation_names_are_unique() -> None:
-    """Keep registered operation names unique."""
-    names = [operation.name for operation in iter_operations()]
+EXPECTED_OPERATIONS = (
+    "identity",
+    "scale",
+    "add",
+    "subtract",
+    "multiply",
+    "divide",
+    "maximum",
+    "minimum",
+    "abs",
+    "clip",
+    "real",
+    "imag",
+    "angle",
+    "conj",
+    "exp",
+    "log",
+    "log10",
+    "log2",
+    "is_finite",
+    "isinf",
+    "isnan",
+    "fillna",
+    "where",
+    "flip",
+    "roll",
+    "standardize",
+    "aggregate",
+    "all",
+    "any",
+    "max",
+    "mean",
+    "median",
+    "min",
+    "std",
+    "sum",
+    "detrend",
+    "correlate_shift",
+    "dispersion_phase_shift",
+    "normalize",
+    "differentiate",
+    "integrate",
+    "taper",
+    "taper_range",
+    "gaussian_filter",
+    "hampel_filter",
+    "median_filter",
+    "sobel_filter",
+    "savgol_filter",
+    "notch_filter",
+    "wiener_filter",
+    "slope_filter",
+    "pass_filter",
+    "line_mute",
+    "slope_mute",
+    "pad",
+    "hilbert",
+    "envelope",
+    "phase_weighted_stack",
+    "dft",
+    "idft",
+    "whiten",
+    "fbe",
+    "velocity_to_strain_rate",
+    "velocity_to_strain_rate_edgeless",
+    "radians_to_strain",
+    "tau_p",
+    "correlate",
+    "decimate",
+    "interpolate",
+    "istft",
+    "resample",
+    "stft",
+)
+
+EXPECTED_OPERATION_MODULES = {
+    "identity": "dasjax.operations.basic",
+    "scale": "dasjax.operations.basic",
+    "add": "dasjax.operations.basic",
+    "subtract": "dasjax.operations.basic",
+    "multiply": "dasjax.operations.basic",
+    "divide": "dasjax.operations.basic",
+    "maximum": "dasjax.operations.basic",
+    "minimum": "dasjax.operations.basic",
+    "abs": "dasjax.operations.basic",
+    "clip": "dasjax.operations.basic",
+    "real": "dasjax.operations.basic",
+    "imag": "dasjax.operations.basic",
+    "angle": "dasjax.operations.basic",
+    "conj": "dasjax.operations.basic",
+    "exp": "dasjax.operations.basic",
+    "log": "dasjax.operations.basic",
+    "log10": "dasjax.operations.basic",
+    "log2": "dasjax.operations.basic",
+    "is_finite": "dasjax.operations.basic",
+    "isinf": "dasjax.operations.basic",
+    "isnan": "dasjax.operations.basic",
+    "fillna": "dasjax.operations.basic",
+    "where": "dasjax.operations.basic",
+    "flip": "dasjax.operations.basic",
+    "roll": "dasjax.operations.basic",
+    "standardize": "dasjax.operations.basic",
+    "aggregate": "dasjax.operations.basic",
+    "all": "dasjax.operations.basic",
+    "any": "dasjax.operations.basic",
+    "max": "dasjax.operations.basic",
+    "mean": "dasjax.operations.basic",
+    "median": "dasjax.operations.basic",
+    "min": "dasjax.operations.basic",
+    "std": "dasjax.operations.basic",
+    "sum": "dasjax.operations.basic",
+    "detrend": "dasjax.operations.detrend",
+    "correlate_shift": "dasjax.operations.correlate",
+    "dispersion_phase_shift": "dasjax.operations.dispersion",
+    "normalize": "dasjax.operations.normalize",
+    "differentiate": "dasjax.operations.differentiate",
+    "integrate": "dasjax.operations.integrate",
+    "taper": "dasjax.operations.taper",
+    "taper_range": "dasjax.operations.taper",
+    "gaussian_filter": "dasjax.operations.filter",
+    "hampel_filter": "dasjax.operations.filter",
+    "median_filter": "dasjax.operations.filter",
+    "notch_filter": "dasjax.operations.filter",
+    "pass_filter": "dasjax.operations.filter",
+    "savgol_filter": "dasjax.operations.filter",
+    "sobel_filter": "dasjax.operations.filter",
+    "slope_filter": "dasjax.operations.filter",
+    "wiener_filter": "dasjax.operations.filter",
+    "line_mute": "dasjax.operations.mute",
+    "slope_mute": "dasjax.operations.mute",
+    "pad": "dasjax.operations.pad",
+    "hilbert": "dasjax.operations.hilbert",
+    "envelope": "dasjax.operations.hilbert",
+    "phase_weighted_stack": "dasjax.operations.hilbert",
+    "dft": "dasjax.operations.fourier",
+    "idft": "dasjax.operations.fourier",
+    "whiten": "dasjax.operations.whiten",
+    "fbe": "dasjax.operations.spectro",
+    "velocity_to_strain_rate": "dasjax.operations.strain",
+    "velocity_to_strain_rate_edgeless": "dasjax.operations.strain",
+    "radians_to_strain": "dasjax.operations.strain",
+    "tau_p": "dasjax.operations.taup",
+    "correlate": "dasjax.operations.numeric",
+    "decimate": "dasjax.operations.numeric",
+    "interpolate": "dasjax.operations.numeric",
+    "istft": "dasjax.operations.numeric",
+    "resample": "dasjax.operations.numeric",
+    "stft": "dasjax.operations.numeric",
+}
+
+
+def test_core_operation_names_are_unique() -> None:
+    """Ensure each registered operation has a distinct public name."""
+    names = [operation.operation_name() for operation in iter_patch_operations()]
     assert len(names) == len(set(names))
 
 
-def test_leaf_operations_define_leaf_transform() -> None:
-    """Require leaf operations to expose only the leaf transform path."""
-    for operation in iter_operations():
-        if operation.execution_policy is ExecutionPolicy.LEAF:
-            assert operation.leaf_transform is not None
-        else:
-            assert operation.leaf_transform is None
+def test_all_operations_are_patch_operation_subclasses() -> None:
+    """Keep the registry limited to PatchOperation subclasses."""
+    for operation in iter_patch_operations():
+        assert issubclass(operation, PatchOperation)
 
 
-def test_all_operations_define_patch_op_class() -> None:
-    """Ensure every registered operation exposes a PatchOp class."""
-    for operation in iter_operations():
-        assert operation.patch_op_cls is not None
+def test_list_patch_operations_preserves_registry_order() -> None:
+    """Expose operation names in deterministic registration order."""
+    assert dasjax.list_patch_operations() == EXPECTED_OPERATIONS
 
 
-def test_patch_op_subclass_registry_is_populated() -> None:
-    """Register concrete PatchOp subclasses for runtime introspection."""
-    subclass_names = {cls.__name__ for cls in PatchOp.iter_subclasses()}
-    assert "ScaleOp" in subclass_names
-    assert "PadOp" in subclass_names
+def test_get_patch_operation_resolves_all_registered_names() -> None:
+    """Resolve every expected operation through the public lookup helper."""
+    for name in EXPECTED_OPERATIONS:
+        assert get_patch_operation(name).operation_name() == name
 
 
-def test_patch_op_compile_category_table_contains_expected_groups() -> None:
-    """Expose the expected compile categories through the PatchOp table."""
-    table = PatchOp.compile_category_table()
-    assert "kernel_fusible" in table
-    assert "compiled_boundary" in table
-    assert "eager_boundary" in table
+def test_operations_live_in_domain_modules() -> None:
+    """Keep operation implementations grouped by DASCore-style domains."""
+    for name, module_name in EXPECTED_OPERATION_MODULES.items():
+        assert get_patch_operation(name).__module__ == module_name
 
 
 def test_package_root_exports_only_runtime_surface() -> None:
-    """Keep the root package export surface intentionally small."""
-    assert sorted(dasjax.__all__) == ["JaxPatchPipeline", "list_operations"]
-
-
-def test_list_operations_preserves_registry_order() -> None:
-    """Preserve registry order when listing operation names."""
-    assert list_operations() == tuple(operation.name for operation in OPERATIONS)
-
-
-def test_operation_families_export_specs_from_packages() -> None:
-    """Expose operation spec collections from each family package."""
-    for module in (basic, signal, filters, spectral):
-        assert hasattr(module, "OPERATIONS")
-        assert module.OPERATIONS
-        assert module.__file__ is not None
-        assert module.__file__.endswith("__init__.py")
-
-
-def test_operation_impl_modules_avoid_private_dascore_imports() -> None:
-    """Avoid private DASCore imports inside operation implementations."""
-    for module in (
-        basic_impl,
-        signal_impl,
-        filters_impl,
-        spectral_impl,
-    ):
-        source = inspect.getsource(module)
-        assert "from dascore" in source
-        assert " import _" not in source
+    """Avoid exporting implementation modules from the package root."""
+    assert sorted(dasjax.__all__) == [
+        "JaxPatchPipeline",
+        "PatchBoundary",
+        "PatchOperation",
+        "PatchPyTree",
+        "get_patch_operation",
+        "iter_patch_operations",
+        "list_patch_operations",
+    ]

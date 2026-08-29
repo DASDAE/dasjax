@@ -2,7 +2,7 @@
 
 This file gives AI/code agents a practical checklist for contributing safely to dasjax.
 
-Keep Markdown prose unwrapped. Do not hard-wrap paragraphs in `.md` files unless a specific format requires it.
+Keep Markdown prose unwrapped. Do not hard-wrap paragraphs or list items in `.md` files; let editors soft-wrap them. Code blocks and formats that require line breaks are exceptions.
 
 ## Scope and priorities
 

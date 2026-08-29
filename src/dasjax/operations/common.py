@@ -1,139 +1,54 @@
-"""Shared helpers used by operation-family modules."""
+"""Shared helpers for patch operation implementations."""
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from dataclasses import fields
 from typing import Any
 
 import dascore as dc
 import numpy as np
-from dascore.constants import PatchType
-from dascore.exceptions import ParameterError
+from dascore.units import get_quantity
 
-from .types import OperationSpec
+from dasjax.core import PatchBoundary, PatchPyTree
 
 
-def get_axis(patch: PatchType, dim: str | None) -> int | None:
-    if dim is None:
+def replace(obj: Any, **changes: Any) -> Any:
+    """Copy frozen operation instances without calling custom constructors."""
+    out = object.__new__(type(obj))
+    for field in fields(obj):
+        object.__setattr__(
+            out, field.name, changes.get(field.name, getattr(obj, field.name))
+        )
+    return out
+
+
+def dummy_patch(boundary: PatchBoundary, dtype=np.float64) -> dc.Patch:
+    """Create a zero-data patch with metadata from a pipeline boundary."""
+    return dc.Patch(
+        data=np.zeros(boundary.coords.shape, dtype=dtype),
+        coords=boundary.coords,
+        dims=boundary.dims,
+        attrs=boundary.attrs,
+    )
+
+
+def tree_boundary_from_patch(patch: dc.Patch) -> tuple[PatchPyTree, PatchBoundary]:
+    """Convert a DASCore patch into pipeline tree and boundary objects."""
+    return PatchPyTree.from_patch(patch)
+
+
+def get_data_units_from_dims(
+    boundary: PatchBoundary,
+    dims: tuple[str, ...],
+    operator,
+) -> Any:
+    """Apply a unit operator between data units and dimension units."""
+    if (data_units := get_quantity(boundary.attrs.data_units)) is None:
         return None
-    try:
-        return patch.dims.index(dim)
-    except ValueError as exc:
-        msg = f"Patch does not contain dimension {dim!r}."
-        raise ValueError(msg) from exc
-
-
-def get_axis_from_dims(dims: tuple[str, ...], dim: str | None) -> int | None:
-    if dim is None:
-        return None
-    try:
-        return dims.index(dim)
-    except ValueError as exc:
-        msg = f"Patch does not contain dimension {dim!r}."
-        raise ValueError(msg) from exc
-
-
-def update_patch(patch: PatchType, data: Any) -> PatchType:
-    return patch.update(data=np.asarray(data))
-
-
-def prepare_operation_call(
-    operation: OperationSpec,
-    patch: PatchType,
-    args: tuple[Any, ...],
-    kwargs: dict[str, Any],
-) -> tuple[tuple[Any, ...], dict[str, Any]]:
-    if operation.prepare_call is None:
-        return args, kwargs
-    return operation.prepare_call(patch, args, kwargs)
-
-
-def offset_patch(patch: PatchType, offset: float) -> PatchType:
-    return patch.update(data=patch.data + offset)
-
-
-def baseline_update(
-    patch: PatchType,
-    args: tuple[Any, ...],
-    kwargs: dict[str, Any],
-    fn: Callable[..., Any],
-) -> PatchType:
-    return patch.update(data=np.asarray(fn(patch.data, *args, **kwargs)))
-
-
-def baseline_patch_method(
-    patch: PatchType,
-    args: tuple[Any, ...],
-    kwargs: dict[str, Any],
-    method_name: str,
-) -> PatchType:
-    return getattr(patch, method_name)(*args, **kwargs)
-
-
-def get_evenly_sampled_dim(patch: PatchType) -> str:
-    for dim in reversed(patch.dims):
-        if patch.get_coord(dim).step is not None:
-            return dim
-    msg = f"Patch does not contain an evenly sampled dimension: {patch.dims}"
-    raise ParameterError(msg)
-
-
-def get_preferred_transform_dim(patch: PatchType) -> str:
-    for dim in reversed(patch.dims):
-        if patch.get_coord(dim).step is not None:
-            return dim
-    return patch.dims[-1]
-
-
-def resolve_even_dim_call(
-    patch: PatchType,
-    **kwargs: Any,
-) -> tuple[tuple[Any, ...], dict[str, Any]]:
-    out = dict(kwargs)
-    out["dim"] = get_preferred_transform_dim(patch)
-    return (), out
-
-
-def prepare_complex_patch(patch: PatchType) -> PatchType:
-    data = np.asarray(patch.data, dtype=np.complex128)
-    return patch.update(data=data + 1j * data)
-
-
-def prepare_fourier_patch(patch: PatchType) -> PatchType:
-    from dascore.transform.fourier import dft as dc_dft
-
-    dim = get_preferred_transform_dim(patch)
-    try:
-        return dc_dft.func(patch, dim=dim, real=True, pad=False)
-    except Exception:
-        return patch
-
-
-def prepare_even_patch_for_dim(patch: PatchType) -> PatchType:
-    dim = get_preferred_transform_dim(patch)
-    coord = patch.get_coord(dim)
-    if coord.step is not None:
-        return patch
-    new_coord = dc.get_coord(start=0, stop=len(coord), step=1, units=coord.units)
-    return patch.update(coords=patch.coords.update(**{dim: new_coord}))
-
-
-def validate_registry(operations: tuple[OperationSpec, ...]) -> None:
-    seen: set[str] = set()
-    for operation in operations:
-        if operation.name in seen:
-            msg = f"Duplicate jax patch operation {operation.name!r}."
-            raise ValueError(msg)
-        seen.add(operation.name)
-        if (
-            operation.execution_policy.value == "leaf"
-            and operation.leaf_transform is None
-        ):
-            msg = f"Leaf operation {operation.name!r} must define leaf_transform."
-            raise ValueError(msg)
-        if (
-            operation.execution_policy.value == "patch"
-            and operation.leaf_transform is not None
-        ):
-            msg = f"Patch operation {operation.name!r} must not define leaf_transform."
-            raise ValueError(msg)
+    dim_units = None
+    for dim_name in dims:
+        dim_unit = get_quantity(boundary.coord(dim_name).units)
+        if dim_unit is None:
+            continue
+        dim_units = dim_unit if dim_units is None else dim_unit * dim_units
+    return operator(data_units, dim_units) if dim_units is not None else data_units

@@ -31,7 +31,8 @@ def detrend_kernel(data: Any, axis: int, type: str) -> Any:
     detrend_type = validate_detrend_type(type)
     # Constant detrending is just mean subtraction along the selected axis.
     if detrend_type == "constant":
-        return data - jnp.mean(data, axis=axis, keepdims=True)
+        mean = jnp.sum(data, axis=axis, keepdims=True) / data.shape[axis]
+        return data - mean
 
     # Move the target axis to the front so the regression math is 1D in layout.
     moved = jnp.moveaxis(data, axis, 0)

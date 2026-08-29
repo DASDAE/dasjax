@@ -1,23 +1,154 @@
-"""Operation registry package."""
+"""Registered patch operations grouped by DASCore operation domain."""
 
-from .patch_ops import EagerPatchOp, OpResult, PatchOp, PatchSpec, PatchState
-from .registry import (
-    get_operation,
-    iter_operations,
-    list_operations,
+from __future__ import annotations
+
+from .basic import (
+    Abs,
+    Add,
+    Aggregate,
+    Angle,
+    All,
+    AnyOp,
+    Clip,
+    Conj,
+    Divide,
+    Exp,
+    FillNa,
+    Flip,
+    Identity,
+    Imag,
+    IsFinite,
+    IsInf,
+    IsNan,
+    Log,
+    Log10,
+    Log2,
+    Max,
+    Maximum,
+    Mean,
+    Median,
+    Min,
+    Minimum,
+    Multiply,
+    Real,
+    Roll,
+    Scale,
+    Standardize,
+    Std,
+    Subtract,
+    Sum,
+    Where,
 )
-from .types import ExecutionPolicy, OperationCase, OperationSpec
+from .detrend import Detrend
+from .correlate import CorrelateShift
+from .dispersion import DispersionPhaseShift
+from .normalize import Normalize
+from .differentiate import Differentiate
+from .integrate import Integrate
+from .taper import Taper, TaperRange
+from .filter import (
+    GaussianFilter,
+    HampelFilter,
+    MedianFilter,
+    NotchFilter,
+    PassFilter,
+    SavgolFilter,
+    SobelFilter,
+    SlopeFilter,
+    WienerFilter,
+)
+from .mute import LineMute, SlopeMute
+from .pad import Pad
+from .hilbert import Envelope, Hilbert, PhaseWeightedStack
+from .fourier import Dft, Idft
+from .whiten import Whiten
+from .spectro import Fbe
+from .strain import (
+    RadiansToStrain,
+    VelocityToStrainRate,
+    VelocityToStrainRateEdgeless,
+)
+from .taup import TauP
+from .numeric import (
+    Correlate,
+    Decimate,
+    Interpolate,
+    Istft,
+    Resample,
+    Stft,
+)
 
 __all__ = [
-    "ExecutionPolicy",
-    "EagerPatchOp",
-    "OpResult",
-    "OperationCase",
-    "OperationSpec",
-    "PatchOp",
-    "PatchSpec",
-    "PatchState",
-    "get_operation",
-    "iter_operations",
-    "list_operations",
+    "Abs",
+    "Add",
+    "Aggregate",
+    "All",
+    "Angle",
+    "AnyOp",
+    "Clip",
+    "Conj",
+    "Correlate",
+    "CorrelateShift",
+    "Decimate",
+    "Detrend",
+    "DispersionPhaseShift",
+    "Divide",
+    "Dft",
+    "Differentiate",
+    "Envelope",
+    "Exp",
+    "Fbe",
+    "FillNa",
+    "Flip",
+    "GaussianFilter",
+    "HampelFilter",
+    "Hilbert",
+    "Identity",
+    "Idft",
+    "Imag",
+    "Integrate",
+    "Interpolate",
+    "IsFinite",
+    "IsInf",
+    "IsNan",
+    "Istft",
+    "LineMute",
+    "Log",
+    "Log10",
+    "Log2",
+    "Max",
+    "Maximum",
+    "Mean",
+    "Median",
+    "MedianFilter",
+    "Min",
+    "Minimum",
+    "Multiply",
+    "NotchFilter",
+    "Normalize",
+    "Pad",
+    "PassFilter",
+    "PhaseWeightedStack",
+    "RadiansToStrain",
+    "Real",
+    "Resample",
+    "Roll",
+    "Scale",
+    "SavgolFilter",
+    "SobelFilter",
+    "SlopeFilter",
+    "SlopeMute",
+    "Standardize",
+    "Std",
+    "Stft",
+    "Subtract",
+    "Sum",
+    "Taper",
+    "TaperRange",
+    "TauP",
+    "VelocityToStrainRate",
+    "Where",
+    "VelocityToStrainRateEdgeless",
+    "Whiten",
+    "WienerFilter",
 ]

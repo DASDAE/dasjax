@@ -14,7 +14,6 @@ import numpy as np
 import pytest
 
 from dasjax import JaxPatchPipeline
-from dasjax.operations import get_operation
 
 NORMS = ("l1", "l2", "max", "bit")
 DTYPES = ("float64", "float32", "int64", "int32", "int16", "uint8")
@@ -51,19 +50,17 @@ def null_patch() -> dc.Patch:
 
 
 def _assert_matches_dascore(patch: dc.Patch, norm: str) -> None:
-    """Both dasjax paths must agree with DASCore's own normalize."""
+    """The compiled pipeline must agree with DASCore's own normalize."""
     expected = patch.normalize("many", norm=norm).data
-    eager = get_operation("normalize").patch_impl(patch, dim="many", norm=norm)
     compiled = JaxPatchPipeline().normalize(dim="many", norm=norm).compile()(patch)
-    for name, out in (("eager", eager), ("compiled", compiled)):
-        np.testing.assert_allclose(
-            np.asarray(out.data),
-            np.asarray(expected),
-            rtol=1e-6,
-            atol=1e-8,
-            equal_nan=True,
-            err_msg=f"{name} normalize(norm={norm!r}) disagrees with DASCore",
-        )
+    np.testing.assert_allclose(
+        np.asarray(compiled.data),
+        np.asarray(expected),
+        rtol=1e-6,
+        atol=1e-8,
+        equal_nan=True,
+        err_msg=f"normalize(norm={norm!r}) disagrees with DASCore",
+    )
 
 
 @pytest.mark.parametrize("norm", NORMS)

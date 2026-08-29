@@ -56,7 +56,7 @@ def dft_kernel(
     """Apply a scaled DFT over one or more axes."""
     arr = jnp.asarray(data)
     # Multiply by sample spacing so forward and inverse transforms stay consistent.
-    scale_factor = np.prod(dxs)
+    scale_factor = jnp.asarray(np.prod(dxs), dtype=arr.real.dtype)
     if real_axis is None:
         fft_data = jnp.fft.fftn(arr, axes=axes) * scale_factor
         # Shift zero frequency to the center on fully complex transforms.
@@ -78,7 +78,7 @@ def idft_kernel(
     """Apply a scaled inverse DFT over one or more axes."""
     arr = jnp.asarray(data)
     # Undo the forward scaling using the frequency-domain step sizes.
-    scale_factor = np.prod(new_steps)
+    scale_factor = jnp.asarray(np.prod(new_steps), dtype=arr.real.dtype)
     if real:
         real_axis = axes[-1]
         # Only the non-rfft axes were shifted in the forward real transform.
@@ -127,6 +127,29 @@ def whiten_kernel(
         fft_data = jnp.fft.rfft(moved, axis=-1)
     else:
         fft_data = jnp.fft.fft(moved, axis=-1)
+    phase_only = whiten_spectrum_kernel(
+        fft_data,
+        axis=-1,
+        window_len=window_len,
+        water_level=water_level,
+        freq_weight=freq_weight,
+    )
+    if is_real:
+        out = jnp.fft.irfft(phase_only, n=moved.shape[-1], axis=-1)
+    else:
+        out = jnp.fft.ifft(phase_only, axis=-1)
+    return jnp.moveaxis(out, -1, axis)
+
+
+def whiten_spectrum_kernel(
+    data: Any,
+    axis: int,
+    window_len: int | None = None,
+    water_level: float | None = None,
+    freq_weight: Any | None = None,
+) -> Any:
+    """Whiten already transformed frequency-domain data."""
+    fft_data = jnp.moveaxis(jnp.asarray(data), axis, -1)
     amp = jnp.abs(fft_data)
     if window_len is None:
         # The unsmoothed case is straight phase-only whitening.
@@ -136,7 +159,7 @@ def whiten_kernel(
         env = _uniform_wrap_kernel(amp, window_len)
         if water_level is not None:
             # Water-level clipping prevents deep spectral notches from exploding.
-            min_level = water_level * jnp.max(env, axis=-1, keepdims=True)
+            min_level = water_level * jnp.max(env)
             env = jnp.maximum(env, min_level)
         norm_amp = jnp.where(env != 0, env, 1)
     phase_only = fft_data / norm_amp
@@ -145,11 +168,18 @@ def whiten_kernel(
         phase_only = apply_1d_weight_kernel(
             phase_only, axis=phase_only.ndim - 1, weight=freq_weight
         )
-    if is_real:
-        out = jnp.fft.irfft(phase_only, n=moved.shape[-1], axis=-1)
-    else:
-        out = jnp.fft.ifft(phase_only, axis=-1)
-    return jnp.moveaxis(out, -1, axis)
+    return jnp.moveaxis(phase_only, -1, axis)
+
+
+def correlate_shift_kernel(
+    data: Any,
+    axis: int,
+    step: float,
+    undo_weighting: bool = True,
+) -> Any:
+    """Shift correlation lags back to centered order."""
+    out = jnp.fft.fftshift(jnp.asarray(data), axes=axis)
+    return out / step if undo_weighting else out
 
 
 def _extract_zero_padded_frames(
