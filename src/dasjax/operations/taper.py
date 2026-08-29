@@ -10,16 +10,11 @@ from typing import Any, Self
 import dascore as dc
 import numpy as np
 from dascore.exceptions import ParameterError
-from scipy.signal import get_window
-
+from dasjax.compat import taper_ramp, taper_range_ramp
 from dasjax.core import PatchBoundary, PatchOperation, PatchPyTree
 
 from .. import kernels
 from .common import dummy_patch, replace
-
-
-def _taper_window(window_type: str, size: int) -> np.ndarray:
-    return np.asarray(get_window(window_type, size, fftbins=False), dtype=np.float64)
 
 
 def _taper_slices(boundary: PatchBoundary, kwargs: dict[str, Any]):
@@ -69,13 +64,9 @@ class Taper(PatchOperation):
             raise ParameterError("Taper windows cannot overlap")
         weight = np.ones(length, dtype=np.float64)
         if start_len is not None and start_len > 0:
-            weight[:start_len] = _taper_window(self.window_type, 2 * start_len)[
-                :start_len
-            ]
+            weight[:start_len] = taper_ramp(self.window_type, start_len)
         if end_slice.start is not None and end_slice.start < length:
-            weight[end_slice.start :] = _taper_window(self.window_type, 2 * end_len)[
-                end_len:
-            ]
+            weight[end_slice.start :] = taper_ramp(self.window_type, end_len)[::-1]
         return replace(self, axis=axis, weight=weight)
 
     def kernel(self, patch_tree: PatchPyTree) -> PatchPyTree:
@@ -109,7 +100,7 @@ def _taper_coord_inds(coord, values, relative, samples):
 
 
 def _taper_curve(coord, ind_1, ind_2, window_type, reverse=False):
-    taper = _taper_window(window_type, (ind_2 - ind_1) * 2 + 1)[: ind_2 - ind_1]
+    taper = taper_range_ramp(window_type, ind_2 - ind_1)
     return taper[::-1] if reverse else taper
 
 

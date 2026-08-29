@@ -8,10 +8,18 @@ import numpy as np
 from dasjax import JaxPatchPipeline
 
 
+def coord_units(patch) -> dict[str, str]:
+    """Return the units of each coordinate, keyed by coordinate name."""
+    return {name: str(coord.units) for name, coord in patch.coords.coord_map.items()}
+
+
 def assert_patch_close(left, right) -> None:
     """Assert data closeness and exact coordinate preservation."""
     assert np.allclose(left.data, right.data, equal_nan=True, rtol=1e-5, atol=1e-6)
     assert left.coords == right.coords
+    # Coordinate equality ignores units, so they need their own assertion.
+    assert coord_units(left) == coord_units(right)
+    assert left.attrs.data_units == right.attrs.data_units
 
 
 def complex_patch(patch):

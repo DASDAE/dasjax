@@ -147,6 +147,29 @@ def test_patch_boundary_swaps_dynamic_coord_values() -> None:
     assert out.get_coord("distance").units == patch.get_coord("distance").units
 
 
+def _coord_units(patch) -> dict[str, str]:
+    """Return the units of each coordinate, keyed by coordinate name."""
+    return {name: str(coord.units) for name, coord in patch.coords.coord_map.items()}
+
+
+def test_compiled_pipeline_preserves_units(example_patch) -> None:
+    """Keep coordinate and data units through a compiled pipeline."""
+    out = JaxPatchPipeline().abs().compile()(example_patch)
+
+    assert _coord_units(out) == _coord_units(example_patch)
+    assert out.attrs.data_units == example_patch.attrs.data_units
+
+
+def test_compiled_pipeline_preserves_units_when_coords_change() -> None:
+    """Keep units on a coordinate whose values the kernel rewrites."""
+    patch = dc.get_example_patch().set_units("strain", distance="m", time="s")
+
+    out = JaxPatchPipeline().flip("distance").compile()(patch)
+
+    assert _coord_units(out) == _coord_units(patch.flip("distance"))
+    assert str(out.get_coord("distance").units) == "1 m"
+
+
 def test_patch_boundary_exposes_author_metadata_helpers() -> None:
     """Provide a compact metadata API for operation binding."""
     patch = dc.get_example_patch()
