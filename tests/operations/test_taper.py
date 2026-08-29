@@ -27,11 +27,33 @@ CASES = (
     ),
 )
 
+# DASCore's own names for hann and triang, which scipy does not know.
+DASCORE_WINDOW_NAMES = ("cos", "ramp")
+
 
 @pytest.mark.parametrize("case", CASES, ids=lambda item: item[0])
 def test_compiled_taper_operation_matches_dascore(case) -> None:
     """Match compiled taper operations against DASCore baselines."""
     assert_compiled_matches_dascore(case)
+
+
+@pytest.mark.parametrize("window_type", DASCORE_WINDOW_NAMES)
+def test_dascore_window_names_match_dascore(window_type) -> None:
+    """Match DASCore's own window names, which scipy spells differently."""
+    patch = dc.get_example_patch()
+    taper = JaxPatchPipeline().taper(time=0.05, window_type=window_type)
+    ranged = JaxPatchPipeline().taper_range(
+        time=(10, 20), samples=True, window_type=window_type
+    )
+
+    assert_patch_close(
+        taper.compile()(patch),
+        patch.taper(time=0.05, window_type=window_type),
+    )
+    assert_patch_close(
+        ranged.compile()(patch),
+        patch.taper_range(time=(10, 20), samples=True, window_type=window_type),
+    )
 
 
 def test_taper_range_edges_and_errors() -> None:
