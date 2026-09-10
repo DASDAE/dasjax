@@ -37,4 +37,3 @@ out = patch.pipe(compiled)
 
 print(out.shape)
 ```
-
